@@ -11,7 +11,7 @@ class RedisClient:
 
     def __init__(self, host: str = "localhost", port: int = 6380, db: int = 0):
         """Initialize Redis client.
-        
+
         Args:
             host: Redis host (default: localhost)
             port: Redis port (default: 6380 for Docker)
@@ -30,10 +30,10 @@ class RedisClient:
 
     def register_agent(self, agent_data: dict) -> bool:
         """Register an agent in Redis.
-        
+
         Args:
             agent_data: Agent registration data
-            
+
         Returns:
             True if registration successful, False if agent already exists
         """
@@ -58,10 +58,10 @@ class RedisClient:
 
     def get_agent(self, agent_name: str) -> dict | None:
         """Get agent data by name.
-        
+
         Args:
             agent_name: Name of the agent
-            
+
         Returns:
             Agent data dictionary or None if not found
         """
@@ -87,7 +87,7 @@ class RedisClient:
 
     def list_agents(self) -> list[dict]:
         """List all registered agents.
-        
+
         Returns:
             List of agent data dictionaries
         """
@@ -103,11 +103,11 @@ class RedisClient:
 
     def update_agent_status(self, agent_name: str, status: str) -> bool:
         """Update agent status.
-        
+
         Args:
             agent_name: Name of the agent
             status: New status (active, inactive, error)
-            
+
         Returns:
             True if updated successfully, False if agent not found
         """
@@ -115,16 +115,18 @@ class RedisClient:
             return False
 
         self.redis.hset(f"agent:{agent_name}", "status", status)
-        self.redis.hset(f"agent:{agent_name}", "last_verified", datetime.now(UTC).isoformat())
+        self.redis.hset(
+            f"agent:{agent_name}", "last_verified", datetime.now(UTC).isoformat()
+        )
 
         return True
 
     def delete_agent(self, agent_name: str) -> bool:
         """Delete an agent from Redis.
-        
+
         Args:
             agent_name: Name of the agent to delete
-            
+
         Returns:
             True if deleted successfully, False if agent not found
         """
@@ -142,9 +144,24 @@ class RedisClient:
 
         return True
 
+    def cleanup_all_agents(self) -> int:
+        """Delete all agents from Redis.
+
+        Returns:
+            Number of agents deleted
+        """
+        agent_names = self.redis.smembers("agents")
+        count = 0
+
+        for agent_name in agent_names:
+            if self.delete_agent(agent_name):
+                count += 1
+
+        return count
+
     def add_to_queue(self, agent_name: str, message: dict) -> None:
         """Add message to agent queue.
-        
+
         Args:
             agent_name: Name of the agent
             message: Message to queue
@@ -154,10 +171,10 @@ class RedisClient:
 
     def get_from_queue(self, agent_name: str) -> dict | None:
         """Get message from agent queue.
-        
+
         Args:
             agent_name: Name of the agent
-            
+
         Returns:
             Message dictionary or None if queue is empty
         """
@@ -169,9 +186,11 @@ class RedisClient:
                 return None
         return None
 
-    def create_session(self, session_id: str, agent_name: str, context: dict = None) -> None:
+    def create_session(
+        self, session_id: str, agent_name: str, context: dict = None
+    ) -> None:
         """Create a new session.
-        
+
         Args:
             session_id: Unique session identifier
             agent_name: Name of the agent for this session
@@ -181,7 +200,7 @@ class RedisClient:
             "agent_name": agent_name,
             "context": json.dumps(context or {}),
             "created_at": datetime.now(UTC).isoformat(),
-            "last_activity": datetime.now(UTC).isoformat()
+            "last_activity": datetime.now(UTC).isoformat(),
         }
 
         self.redis.hset(f"session:{session_id}", mapping=session_data)
@@ -190,10 +209,10 @@ class RedisClient:
 
     def get_session(self, session_id: str) -> dict | None:
         """Get session data.
-        
+
         Args:
             session_id: Session identifier
-            
+
         Returns:
             Session data dictionary or None if not found
         """
@@ -213,25 +232,27 @@ class RedisClient:
 
     def update_session_activity(self, session_id: str) -> bool:
         """Update session last activity timestamp.
-        
+
         Args:
             session_id: Session identifier
-            
+
         Returns:
             True if updated successfully, False if session not found
         """
         if not self.redis.exists(f"session:{session_id}"):
             return False
 
-        self.redis.hset(f"session:{session_id}", "last_activity", datetime.now(UTC).isoformat())
+        self.redis.hset(
+            f"session:{session_id}", "last_activity", datetime.now(UTC).isoformat()
+        )
         return True
 
     def delete_session(self, session_id: str) -> bool:
         """Delete a session.
-        
+
         Args:
             session_id: Session identifier
-            
+
         Returns:
             True if deleted successfully, False if session not found
         """

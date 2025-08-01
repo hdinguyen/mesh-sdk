@@ -37,13 +37,22 @@ class AgentManifestError(AgentRegistrationError):
 class MissingRequiredFieldsError(AgentRegistrationError):
     """Raised when required fields are missing from agent registration."""
 
-    def __init__(self, missing_fields: list, required_fields: list = None, provided_fields: list = None):
+    def __init__(
+        self,
+        missing_fields: list,
+        required_fields: list = None,
+        provided_fields: list = None,
+    ):
         message = f"Missing required fields: {missing_fields}"
-        super().__init__(message, "REG_004", {
-            "missing_fields": missing_fields,
-            "required_fields": required_fields,
-            "provided_fields": provided_fields
-        })
+        super().__init__(
+            message,
+            "REG_004",
+            {
+                "missing_fields": missing_fields,
+                "required_fields": required_fields,
+                "provided_fields": provided_fields,
+            },
+        )
 
 
 class PlatformConnectionError(AgentRegistrationError):
@@ -51,7 +60,9 @@ class PlatformConnectionError(AgentRegistrationError):
 
     def __init__(self, platform_url: str, connection_error: Exception = None):
         message = f"Unable to connect to platform at {platform_url}"
-        super().__init__(message, "REG_005", {"connection_error": str(connection_error)})
+        super().__init__(
+            message, "REG_005", {"connection_error": str(connection_error)}
+        )
 
 
 class PlatformAuthenticationError(AgentRegistrationError):

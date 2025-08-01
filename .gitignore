@@ -187,3 +187,7 @@ dump.rdb
 .env.local
 .env.development
 config/local.json
+
+# Claude Code and Serena directories
+.claude/
+.serena/

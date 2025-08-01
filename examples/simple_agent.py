@@ -1,6 +1,5 @@
 """Simple agent example using the Agent SDK."""
 
-
 from mesh_agent import AgentSDK
 from mesh_agent.src.exceptions import AgentRegistrationError
 
@@ -19,19 +18,19 @@ class SimpleEchoAgent:
                 "on_register": self.on_register,
                 "on_message": self.on_message_received,
                 "on_error": self.on_error,
-                "on_shutdown": self.on_shutdown
+                "on_shutdown": self.on_shutdown,
             },
             description="A simple echo agent for testing",
             tags=["demo", "echo", "testing"],
-            contact="demo@mesh-sdk.dev"
+            contact="demo@mesh-sdk.dev",
         )
 
     def process_message(self, messages):
         """Process incoming ACP messages.
-        
+
         Args:
             messages: List of ACP Message objects
-            
+
         Returns:
             Dict with response content
         """
@@ -65,7 +64,9 @@ class SimpleEchoAgent:
                 content = msg.parts[0].content
             else:
                 content = str(msg)
-            print(f"   Message {i+1}: {content[:100]}{'...' if len(content) > 100 else ''}")
+            print(
+                f"   Message {i + 1}: {content[:100]}{'...' if len(content) > 100 else ''}"
+            )
 
     def on_error(self, error):
         """Called when an error occurs."""

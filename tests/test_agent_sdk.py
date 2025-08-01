@@ -16,6 +16,7 @@ class TestAgentSDK:
 
     def test_init_with_required_fields(self):
         """Test SDK initialization with required fields."""
+
         def dummy_process(messages):
             return {"content": "processed"}
 
@@ -23,7 +24,7 @@ class TestAgentSDK:
             agent_name="test_agent",
             agent_type="custom",
             capabilities=["text_processing"],
-            process_function=dummy_process
+            process_function=dummy_process,
         )
 
         assert sdk.agent_name == "test_agent"
@@ -36,6 +37,7 @@ class TestAgentSDK:
 
     def test_init_with_optional_fields(self):
         """Test SDK initialization with optional fields."""
+
         def dummy_process(messages):
             return {"content": "processed"}
 
@@ -48,7 +50,7 @@ class TestAgentSDK:
             version="2.0.0",
             description="Test agent for development",
             tags=["test", "development"],
-            contact="test@example.com"
+            contact="test@example.com",
         )
 
         assert sdk.agent_name == "test_agent"
@@ -67,7 +69,7 @@ class TestAgentSDK:
                 agent_name="test_agent",
                 agent_type="custom",
                 capabilities=[],  # Empty capabilities should fail
-                process_function=None  # Missing process function
+                process_function=None,  # Missing process function
             )
 
         assert "Missing required fields" in str(exc_info.value)
@@ -80,24 +82,27 @@ class TestAgentSDK:
                 agent_name="",  # Empty string should fail
                 agent_type="custom",
                 capabilities=["text_processing"],
-                process_function=lambda x: x
+                process_function=lambda x: x,
             )
 
         assert exc_info.value.error_code == "REG_003"
 
     def test_platform_url_priority(self):
         """Test platform URL resolution priority."""
+
         def dummy_process(messages):
             return {"content": "processed"}
 
         # Test environment variable takes priority
-        with patch.dict("os.environ", {"PLATFORM_BASE_URL": "http://env-platform:8080"}):
+        with patch.dict(
+            "os.environ", {"PLATFORM_BASE_URL": "http://env-platform:8080"}
+        ):
             sdk = AgentSDK(
                 agent_name="test_agent",
                 agent_type="custom",
                 capabilities=["text_processing"],
                 process_function=dummy_process,
-                platform_url="http://param-platform:9000"
+                platform_url="http://param-platform:9000",
             )
             assert sdk.platform_url == "http://env-platform:8080"
 
@@ -107,7 +112,7 @@ class TestAgentSDK:
             agent_type="custom",
             capabilities=["text_processing"],
             process_function=dummy_process,
-            platform_url="http://param-platform:9000"
+            platform_url="http://param-platform:9000",
         )
         assert sdk.platform_url == "http://param-platform:9000"
 
@@ -116,7 +121,7 @@ class TestAgentSDK:
             agent_name="test_agent",
             agent_type="custom",
             capabilities=["text_processing"],
-            process_function=dummy_process
+            process_function=dummy_process,
         )
         assert sdk.platform_url == "http://localhost:8000"
 
@@ -132,7 +137,7 @@ class TestAgentSDK:
             agent_name="test_agent",
             agent_type="custom",
             capabilities=["text_processing"],
-            process_function=dummy_process
+            process_function=dummy_process,
         )
 
         assert sdk.port == 8001
@@ -141,6 +146,7 @@ class TestAgentSDK:
 
     def test_auth_token_generation(self):
         """Test automatic auth token generation."""
+
         def dummy_process(messages):
             return {"content": "processed"}
 
@@ -148,14 +154,14 @@ class TestAgentSDK:
             agent_name="test_agent1",
             agent_type="custom",
             capabilities=["text_processing"],
-            process_function=dummy_process
+            process_function=dummy_process,
         )
 
         sdk2 = AgentSDK(
             agent_name="test_agent2",
             agent_type="custom",
             capabilities=["text_processing"],
-            process_function=dummy_process
+            process_function=dummy_process,
         )
 
         # Tokens should be unique and non-empty
@@ -165,6 +171,7 @@ class TestAgentSDK:
 
     def test_field_validation(self):
         """Test field validation logic."""
+
         def dummy_process(messages):
             return {"content": "processed"}
 
@@ -172,7 +179,7 @@ class TestAgentSDK:
             agent_name="test_agent",
             agent_type="custom",
             capabilities=["text_processing"],
-            process_function=dummy_process
+            process_function=dummy_process,
         )
 
         # Test string validation
@@ -185,4 +192,6 @@ class TestAgentSDK:
 
         # Test function validation
         assert sdk._validate_field_value(lambda x: x, {"type": "function"}) == True
-        assert sdk._validate_field_value("not_a_function", {"type": "function"}) == False
+        assert (
+            sdk._validate_field_value("not_a_function", {"type": "function"}) == False
+        )

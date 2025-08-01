@@ -1,6 +1,5 @@
 """Script to run the platform for demo purposes."""
 
-
 from mesh_platform import PlatformCore
 
 

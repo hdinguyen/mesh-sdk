@@ -20,7 +20,9 @@ class TestPlatformCore:
     @pytest.fixture
     def platform(self, mock_redis_client):
         """Create platform instance with mocked Redis."""
-        with patch("mesh_platform.src.platform.RedisClient", return_value=mock_redis_client):
+        with patch(
+            "mesh_platform.src.platform.RedisClient", return_value=mock_redis_client
+        ):
             platform = PlatformCore()
             return platform
 
@@ -39,7 +41,7 @@ class TestPlatformCore:
             "capabilities": ["text_processing"],
             "acp_base_url": "http://localhost:8001",
             "auth_token": "test_token_123",
-            "version": "1.0.0"
+            "version": "1.0.0",
         }
 
         with patch.object(platform, "_verify_agent_connection") as mock_verify:
@@ -77,7 +79,7 @@ class TestPlatformCore:
             "agent_type": "custom",
             "capabilities": ["text_processing"],
             "acp_base_url": "http://localhost:8001",
-            "auth_token": "test_token_123"
+            "auth_token": "test_token_123",
         }
 
         response = client.post("/platform/agents/register", json=agent_data)
@@ -95,7 +97,7 @@ class TestPlatformCore:
             "agent_type": "custom",
             "capabilities": ["text_processing"],
             "acp_base_url": "http://localhost:8001",
-            "auth_token": "test_token_123"
+            "auth_token": "test_token_123",
         }
 
         with patch.object(platform, "_verify_agent_connection") as mock_verify:
@@ -119,7 +121,7 @@ class TestPlatformCore:
                 "version": "1.0.0",
                 "description": "Test agent 1",
                 "tags": ["test"],
-                "contact": "test@example.com"
+                "contact": "test@example.com",
             },
             {
                 "agent_name": "agent2",
@@ -128,8 +130,8 @@ class TestPlatformCore:
                 "version": "2.0.0",
                 "description": "Test agent 2",
                 "tags": ["production"],
-                "contact": "prod@example.com"
-            }
+                "contact": "prod@example.com",
+            },
         ]
 
         platform.redis_client.list_agents.return_value = mock_agents
@@ -157,7 +159,7 @@ class TestPlatformCore:
             "description": "Test agent",
             "tags": ["test"],
             "contact": "test@example.com",
-            "status": "active"
+            "status": "active",
         }
 
         platform.redis_client.get_agent.return_value = mock_agent
@@ -184,15 +186,12 @@ class TestPlatformCore:
         mock_agent = {
             "agent_name": "test_agent",
             "acp_base_url": "http://localhost:8001",
-            "auth_token": "test_token"
+            "auth_token": "test_token",
         }
 
         platform.redis_client.get_agent.return_value = mock_agent
 
-        run_data = {
-            "agent": "test_agent",
-            "input": [{"content": "Hello, agent!"}]
-        }
+        run_data = {"agent": "test_agent", "input": [{"content": "Hello, agent!"}]}
 
         mock_output = [{"content": "Hello, human!"}]
 
@@ -215,7 +214,7 @@ class TestPlatformCore:
 
         run_data = {
             "agent": "nonexistent_agent",
-            "input": [{"content": "Hello, agent!"}]
+            "input": [{"content": "Hello, agent!"}],
         }
 
         response = client.post("/runs", json=run_data)
@@ -263,7 +262,7 @@ class TestRedisClient:
         agent_data = {
             "agent_name": "test_agent",
             "agent_type": "custom",
-            "capabilities": '["text_processing"]'
+            "capabilities": '["text_processing"]',
         }
 
         result = redis_client.register_agent(agent_data)
@@ -280,7 +279,7 @@ class TestRedisClient:
         agent_data = {
             "agent_name": "existing_agent",
             "agent_type": "custom",
-            "capabilities": '["text_processing"]'
+            "capabilities": '["text_processing"]',
         }
 
         result = redis_client.register_agent(agent_data)
@@ -295,7 +294,7 @@ class TestRedisClient:
             "agent_name": "test_agent",
             "agent_type": "custom",
             "capabilities": '["text_processing"]',
-            "status": "active"
+            "status": "active",
         }
 
         result = redis_client.get_agent("test_agent")

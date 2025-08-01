@@ -48,7 +48,7 @@ def main():
     try:
         run_data = {
             "agent": "nonexistent_agent",
-            "input": [{"content": "Hello, agent!"}]
+            "input": [{"content": "Hello, agent!"}],
         }
         response = requests.post(f"{platform_url}/runs", json=run_data)
         print(f"   Status: {response.status_code}")
@@ -72,9 +72,13 @@ def main():
                 if agents:
                     print(f"\n   ✅ Found {len(agents)} agent(s):")
                     for agent in agents:
-                        print(f"     - {agent['name']} ({agent.get('version', '1.0.0')})")
+                        print(
+                            f"     - {agent['name']} ({agent.get('version', '1.0.0')})"
+                        )
                         print(f"       Capabilities: {agent.get('capabilities', [])}")
-                        print(f"       Description: {agent.get('description', 'No description')}")
+                        print(
+                            f"       Description: {agent.get('description', 'No description')}"
+                        )
 
                     # Test with the first agent
                     first_agent = agents[0]
@@ -83,7 +87,7 @@ def main():
                     print(f"\n5. Testing agent run with '{agent_name}'")
                     run_data = {
                         "agent": agent_name,
-                        "input": [{"content": "Hello, this is a test message!"}]
+                        "input": [{"content": "Hello, this is a test message!"}],
                     }
 
                     try:
