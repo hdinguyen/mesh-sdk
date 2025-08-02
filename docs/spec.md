@@ -1677,6 +1677,361 @@ mesh_sdk/
 5. **Error Handling:** Comprehensive exception types and fail-fast logic
 6. **Testing:** Unit tests for both agent SDK and platform components
 
+## Flow/Workflow Orchestration Feature
+
+### Overview
+The flow feature enables n8n-style workflow orchestration where multiple agents can be chained together in complex workflows with dependency management, parallel execution, and conditional routing.
+
+### Core Flow Concepts
+**Flow Definition:**
+- A named workflow container that defines agent execution order and dependencies
+- Agents are added to flows with upstream dependency configuration
+- Platform manages message routing between agents in the flow
+
+**Agent Dependencies:**
+- **Upstream Agents**: Agents that must complete before current agent can execute
+- **Start Agents**: Agents with no upstream dependencies (flow entry points)
+- **Required vs Optional**: Downstream agents wait for all required upstream agents
+- **Multiple Upstreams**: Agents can depend on multiple previous agents
+
+### Flow MVP Design Decisions
+
+#### 1. Flow Execution Trigger
+- **Manual Trigger**: `POST /flows/{flow_id}/execute` endpoint
+- **Future Enhancement**: Webhook triggers (roadmap item)
+- **Input Format**: JSON payload with initial flow data
+
+#### 2. Platform-Managed Message Routing
+- **Agent Responsibility**: Process input → return output (flow-agnostic)
+- **Platform Responsibility**: Route messages between agents, manage dependencies
+- **Message Flow**: Agent output → Platform → Build next message → Send to downstream agents
+
+#### 3. Message Aggregation Strategy (MVP)
+- **Single Upstream**: Direct pass-through of agent output
+- **Multiple Upstreams**: Namespaced aggregation
+```python
+# Single upstream
+downstream_input = upstream_agent_output
+
+# Multiple upstreams  
+downstream_input = {
+    "agent1_name": agent1_output,
+    "agent2_name": agent2_output
+}
+```
+
+#### 4. Flow Health Check & Error Handling Strategy
+- **Pre-execution Health Check**: Before processing any flow message, verify all required agents are available
+- **Flow Ready State**: Only execute flows when all required agents are healthy/available
+- **Health Check Timing**: Check agent availability only at flow execution start
+- **Agent Availability**: Determined by agent responding to ping/health check
+- **Error Response**: Return "flow not ready" error if any required agent is unavailable
+- **Optional Agents**: Don't affect flow health status (flow can run without them)
+
+**Retry Mechanism:**
+- **Fail-Fast with Retries**: If agent fails, retry 3 times with 1-second fixed delay
+- **Retry Scope**: Apply retries to all errors, reset count per agent
+- **Message-Level Failure**: Each message processing is independent
+- **No Cross-Message Recovery**: Failed message stops, but next message can still be processed
+
+**Optional Agent Error Handling:**
+- **Empty MessagePart**: If optional agent fails/doesn't respond, its output is empty in downstream input
+- **Agent Agnostic**: Downstream agents don't know about optional vs required status
+- **Platform Managed**: Platform handles all optional agent logic transparently
+
+#### 5. Agent Input/Output Format
+- **Flow-Agnostic Agents**: Agents don't know they're part of a flow
+- **Standard ACP Messages**: Use existing ACP protocol for agent communication
+- **No Flow Context**: Agents receive only the data they need to process
+- **No Decision Logic**: Agents don't need to decide whether to execute based on input availability
+- **Future Enhancement**: Input/output schema validation using ACP manifest
+
+### Flow API Specification
+
+#### Core Flow Management
+```http
+# Create new flow
+POST /flows
+{
+    "name": "My Workflow"
+}
+
+# List all flows
+GET /flows
+
+# Get flow details
+GET /flows/{flow_id}
+
+# Delete flow
+DELETE /flows/{flow_id}
+```
+
+#### Flow Agent Management
+```http
+# Add agent to flow
+POST /flows/{flow_id}/agents
+{
+    "agent_name": "sentiment_analyzer",
+    "upstream_agents": ["text_extractor", "preprocessor"],
+    "required": true
+}
+
+# List agents in flow
+GET /flows/{flow_id}/agents
+
+# Update agent in flow
+PUT /flows/{flow_id}/agents/{agent_name}
+
+# Remove agent from flow
+DELETE /flows/{flow_id}/agents/{agent_name}
+```
+
+#### Flow Execution
+```http
+# Execute flow
+POST /flows/{flow_id}/execute
+{
+    "input": {
+        "text": "Content to process"
+    }
+}
+
+# Get execution status (future)
+GET /flows/{flow_id}/executions/{execution_id}
+```
+
+### Flow Data Model
+
+#### Flow Schema
+```python
+{
+    "flow_id": "uuid",
+    "name": "My Workflow", 
+    "created_at": "timestamp",
+    "updated_at": "timestamp",
+    "agents": [
+        {
+            "agent_name": "text_extractor",
+            "upstream_agents": [],  # Start agent
+            "required": true,
+            "added_at": "timestamp"
+        },
+        {
+            "agent_name": "sentiment_analyzer",
+            "upstream_agents": ["text_extractor"],
+            "required": true,
+            "added_at": "timestamp"
+        }
+    ]
+}
+```
+
+#### Flow Execution Schema  
+```python
+{
+    "execution_id": "uuid",
+    "flow_id": "uuid",
+    "status": "pending|running|completed|failed",
+    "input_data": "object",
+    "output_data": "object", 
+    "started_at": "timestamp",
+    "completed_at": "timestamp",
+    "error": "string|null",
+    "agent_results": {
+        "agent_name": {
+            "status": "completed|failed",
+            "output": "object",
+            "error": "string|null",
+            "execution_time": "number"
+        }
+    }
+}
+```
+
+### Redis Storage Schema
+
+#### Flow Storage
+```python
+# Flow definition
+"flow:{flow_id}": {
+    "flow_id": "uuid",
+    "name": "string",
+    "created_at": "timestamp", 
+    "updated_at": "timestamp"
+}
+
+# Flow agents
+"flow:{flow_id}:agents": [
+    {
+        "agent_name": "string",
+        "upstream_agents": ["array"],
+        "required": "boolean",
+        "added_at": "timestamp"
+    }
+]
+
+# Flow executions
+"flow:{flow_id}:execution:{execution_id}": {
+    "execution_id": "uuid",
+    "status": "string",
+    "input_data": "object",
+    "agent_results": "object",
+    "started_at": "timestamp"
+}
+```
+
+### Flow Execution Algorithm
+
+#### Pre-Execution Health Check
+1. **Flow Health Validation**: Before processing any message, verify all required agents are available
+2. **Agent Availability Check**: Ping all required agents to ensure responsiveness
+3. **Ready State Determination**: Flow is ready only when all required agents respond successfully
+4. **Error Response**: Return "flow not ready" if any required agent is unavailable
+5. **Optional Agent Handling**: Optional agents don't affect flow health status
+
+#### Execution Flow
+1. **Health Check**: Verify flow is ready (all required agents available)
+2. **Initialize**: Create execution record, identify start agents
+3. **Execute Start Agents**: Send same input data to all start agents simultaneously
+4. **Monitor Progress**: Track agent completion and results with retry logic
+5. **Route Messages**: When agent completes, check downstream agents
+6. **Dependency Check**: For each downstream agent, verify all required upstreams are complete
+7. **Aggregate Inputs**: Combine upstream outputs for ready downstream agents
+8. **Continue Execution**: Send aggregated input to ready agents
+9. **Complete Flow**: When all agents finish or error occurs
+
+#### Dependency Resolution Algorithm
+```python
+def check_agent_ready(agent_name, completed_agents):
+    agent_config = get_agent_config(agent_name)
+    required_upstreams = [
+        upstream for upstream in agent_config.upstream_agents 
+        if get_agent_config(upstream).required == True
+    ]
+    return all(upstream in completed_agents for upstream in required_upstreams)
+
+def check_flow_health(flow_definition):
+    required_agents = [
+        agent.agent_name for agent in flow_definition.agents 
+        if agent.required == True
+    ]
+    for agent_name in required_agents:
+        if not ping_agent(agent_name):
+            return False, f"Required agent '{agent_name}' is not available"
+    return True, "Flow is ready"
+```
+
+#### Multiple Start Agents Handling
+- **Input Distribution**: All start agents receive the same input data from execution request
+- **Parallel Execution**: Start agents execute simultaneously (not sequentially)
+- **Input Format**: Single input object sent to all start agents
+```python
+# Example: Flow with multiple start agents
+POST /flows/{flow_id}/execute
+{
+    "input": {"content": "shared data"}
+}
+# Both text_processor and image_processor receive: {"content": "shared data"}
+```
+
+### Flow Data Management & Persistence
+
+#### Data Retention Policy
+- **Execution History**: Keep recent 100 executions per flow
+- **Automatic Cleanup**: Remove oldest executions when limit exceeded
+- **Intermediate Results**: Store all agent outputs for debugging purposes
+- **Size Limits**: 1MB maximum per agent output (stored in Redis)
+- **Debugging Access**: Full API access to execution timeline and agent results
+
+#### Agent Validation Strategy
+- **Add-Time Validation**: Validate agent exists when adding to flow
+- **Execution-Time Check**: Warn if agent becomes unavailable during execution
+- **Health Integration**: Agent availability checked via existing platform ping system
+- **Flexible References**: Allow agent names that don't exist yet (for development)
+
+#### Flow Modification Behavior
+- **Running Executions**: Continue with original flow definition when flow is modified
+- **New Executions**: Use updated flow definition for new execution requests
+- **No Versioning**: Simple MVP without flow version tracking
+- **Concurrent Safety**: Multiple executions can run simultaneously per flow
+
+#### Concurrency & Performance
+- **Unlimited Concurrency**: No limits on concurrent flow executions for MVP
+- **Parallel Processing**: Multiple executions of same flow allowed
+- **Resource Management**: Rely on existing platform agent management
+- **No Priority System**: All executions treated equally (future enhancement)
+
+#### Debugging & Monitoring APIs
+```http
+# Get detailed execution information
+GET /flows/{flow_id}/executions/{execution_id}
+
+# Get specific agent result within execution
+GET /flows/{flow_id}/executions/{execution_id}/agents/{agent_name}
+
+# Get execution timeline and debug information
+GET /flows/{flow_id}/executions/{execution_id}/debug
+
+# List recent executions for flow
+GET /flows/{flow_id}/executions?limit=10
+```
+
+### Implementation Priority
+1. **Core Flow CRUD**: Create, read, update, delete flows
+2. **Agent Management**: Add/remove agents from flows with dependencies  
+3. **Health Check System**: Pre-execution agent availability validation
+4. **Execution Engine**: Basic flow execution with dependency resolution and retry logic
+5. **Error Handling**: Fail-fast error propagation with retry mechanism
+6. **Flow State Tracking**: Execution status and result storage with debugging APIs
+
+### Complete Flow MVP Specification Summary
+
+#### Confirmed Core Features
+✅ **N8N-Style Workflow System**: Named flows with visual node-based agent orchestration  
+✅ **Agent Dependency Management**: Upstream/downstream relationships with required/optional agents  
+✅ **Platform-Managed Routing**: Complete message flow handled by platform, agents remain flow-agnostic  
+✅ **Manual Execution Trigger**: REST API endpoint with JSON input payload  
+✅ **Pre-Execution Health Checks**: Verify all required agents available before processing  
+
+#### Confirmed Error Handling
+✅ **Fail-Fast with Intelligent Retries**: 3 attempts with 1-second delay per agent failure  
+✅ **Flow Health Validation**: Return "flow not ready" if required agents unavailable  
+✅ **Optional Agent Grace**: Empty MessagePart for failed optional agents, flow continues  
+✅ **Message Independence**: Each execution isolated, no cross-message recovery  
+✅ **Partial Results Storage**: Save intermediate results for debugging even on failure  
+
+#### Confirmed Data Management
+✅ **Simple Message Aggregation**: Direct pass-through for single upstream, namespaced for multiple  
+✅ **Multiple Start Agent Support**: Same input to all start agents, parallel execution  
+✅ **Execution History**: Keep recent 100 executions per flow with automatic cleanup  
+✅ **Size Limitations**: 1MB per agent output, stored in Redis  
+✅ **Full Debug Access**: API endpoints for execution timeline and agent results  
+
+#### Confirmed Operational Behavior
+✅ **Agent Validation**: Check existence on add, warn on execution if unavailable  
+✅ **Concurrent Execution**: Unlimited parallel flow executions allowed  
+✅ **Flow Modification**: Running executions continue with old definition, new ones use updated  
+✅ **No Versioning**: Simple MVP without flow definition versioning  
+✅ **No Priority System**: All executions treated equally  
+
+#### Technical Implementation Decisions
+✅ **Redis Storage**: All flow definitions, executions, and results in Redis  
+✅ **ACP Protocol**: Standard agent communication, no flow-specific messaging  
+✅ **Health Integration**: Leverage existing platform agent ping system  
+✅ **Stateless Agents**: Agents unaware of flow context, receive only necessary data  
+✅ **Platform Orchestration**: Complete dependency resolution and execution management  
+
+### Future Enhancements
+- **Input/Output Schema Validation**: Use ACP manifest schemas for type checking
+- **Webhook Triggers**: Event-driven flow execution
+- **Advanced Error Handling**: Partial execution, fallback agents, circuit breakers
+- **Message Transformation**: Field mapping and data transformation between agents
+- **Conditional Routing**: If/else logic and dynamic agent selection
+- **Parallel Branches**: Complex parallel execution with join operations
+- **Flow Templates**: Pre-built workflow patterns and reusable components
+- **Priority System**: Execution priority levels and resource allocation
+- **Flow Versioning**: Track definition changes and enable rollbacks
+
 ## Instructions for Generative AI
 
 ### How to Use This Specification
