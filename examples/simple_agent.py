@@ -1,5 +1,6 @@
 """Simple agent example using the Agent SDK."""
 
+import sys
 from mesh_agent import AgentSDK
 from mesh_agent.src.exceptions import AgentRegistrationError
 
@@ -7,10 +8,10 @@ from mesh_agent.src.exceptions import AgentRegistrationError
 class SimpleEchoAgent:
     """A simple echo agent that repeats messages back."""
 
-    def __init__(self):
+    def __init__(self, agent_name="simple_echo_agent"):
         """Initialize the echo agent."""
         self.sdk = AgentSDK(
-            agent_name="simple_echo_agent",
+            agent_name=agent_name,
             agent_type="custom",
             capabilities=["echo", "text_processing"],
             process_function=self.process_message,
@@ -106,5 +107,9 @@ class SimpleEchoAgent:
 
 
 if __name__ == "__main__":
-    agent = SimpleEchoAgent()
+    # Get agent name from command line argument or use default
+    agent_name = sys.argv[1] if len(sys.argv) > 1 else "simple_echo_agent"
+    
+    print(f"🤖 Initializing agent with name: {agent_name}")
+    agent = SimpleEchoAgent(agent_name=agent_name)
     agent.start()
