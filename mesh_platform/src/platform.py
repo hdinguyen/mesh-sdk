@@ -18,6 +18,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+class PingFilter(logging.Filter):
+    """Filter to hide /ping requests from logs."""
+    
+    def filter(self, record):
+        # Hide logs that contain "/ping" in the message
+        message = record.getMessage() if hasattr(record, 'getMessage') else str(record.msg)
+        return "/ping" not in message
+
 class PlatformCore:
     """Platform core for managing agents and routing ACP requests."""
 
@@ -28,6 +36,10 @@ class PlatformCore:
             redis_host: Redis server host
             redis_port: Redis server port
         """
+        # Configure logging to hide /ping requests
+        ping_filter = PingFilter()
+        logging.getLogger("httpx").addFilter(ping_filter)
+        
         self.redis_client = RedisClient(host=redis_host, port=redis_port)
         self.app = FastAPI(title="Agent Mesh Platform", version="0.1.0")
         self.ping_tasks: dict[str, asyncio.Task] = {}  # Track ping tasks per agent
@@ -317,7 +329,7 @@ class PlatformCore:
                 else:
                     messages.append(Message(parts=[MessagePart(content=str(msg))]))
 
-            # Execute via ACP client
+            # Execute via ACP client - this should work if ACP server implements /runs endpoint
             async with Client(
                 base_url=agent["acp_base_url"],
                 headers={"Authorization": f"Bearer {agent['auth_token']}"},

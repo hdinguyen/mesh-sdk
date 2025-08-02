@@ -1,5 +1,6 @@
 """Agent SDK for ACP protocol integration."""
 
+import logging
 import os
 import secrets
 import threading
@@ -52,6 +53,14 @@ REQUIRED_REGISTRATION_FIELDS = {
     },
 }
 
+
+class PingFilter(logging.Filter):
+    """Filter to hide /ping requests from logs."""
+    
+    def filter(self, record):
+        # Hide logs that contain "/ping" in the message
+        message = record.getMessage() if hasattr(record, 'getMessage') else str(record.msg)
+        return "/ping" not in message
 
 class AgentSDK:
     """Agent SDK for seamless ACP protocol integration."""
@@ -166,7 +175,7 @@ class AgentSDK:
     def _setup_acp_agent(self) -> None:
         """Set up ACP agent handler."""
 
-        @self.server.agent()
+        @self.server.agent(name=self.agent_name)
         async def agent_handler(
             input: list[Message], context
         ) -> AsyncGenerator[Message, None]:
@@ -267,6 +276,10 @@ class AgentSDK:
     def start(self) -> None:
         """Start the agent and register with platform."""
         try:
+            # Configure logging to hide /ping requests
+            ping_filter = PingFilter()
+            logging.getLogger("uvicorn.access").addFilter(ping_filter)
+            
             # Start ACP server in background thread
             server_thread = threading.Thread(
                 target=lambda: self.server.run(port=self.port), daemon=True
