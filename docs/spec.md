@@ -30,8 +30,8 @@
 - **Linting:** Ruff (https://docs.astral.sh/ruff/)
 
 **Key Components:**
-1. **Platform Core** (`platform/src/`) - Acts as ACP gateway, implements standard ACP endpoints, manages agent registration, message routing, and workflow orchestration
-2. **Agent SDK** (`agent/src/`) - Provides interface for agents to connect and communicate with platform via ACP protocol
+1. **Platform Core** (`mesh_platform/src/`) - Acts as ACP gateway, implements standard ACP endpoints, manages agent registration, message routing, and workflow orchestration
+2. **Agent SDK** (`mesh_agent/src/`) - Provides interface for agents to connect and communicate with platform via ACP protocol
 3. **ACP Protocol Integration** - Standard communication protocol handling authentication, message routing, and error handling
 
 **Architecture Pattern:**
@@ -133,6 +133,10 @@ Authorization: Bearer <optional-token>
 - `POST /runs` - Create and start agent run (ACP standard)
 - `GET /runs/{run_id}` - Get run status (ACP standard)
 - `POST /runs/{run_id}/cancel` - Cancel agent run (ACP standard)
+
+#### Platform Management Endpoints
+- `DELETE /platform/agents/{agent_name}` - Delete specific agent from platform
+- `DELETE /platform/agents/cleanup` - Clean up all registered agents from platform
 
 ## Communication Protocol Details
 
@@ -259,6 +263,7 @@ required_packages = [
     "acp-sdk",      # ACP protocol implementation
     "portpicker",   # Automatic port allocation
     "requests",     # HTTP client for platform registration
+    "logging",      # For filtering ping request logs
 ]
 ```
 
@@ -288,16 +293,31 @@ platform_url = os.getenv("PLATFORM_BASE_URL") or platform_url or "http://localho
 ### Agent Startup Sequence
 **Detailed startup flow:**
 1. **SDK Initialization:** Validate required fields, allocate port, generate auth token
-2. **ACP Server Setup:** Create server instance and register agent handler function
-3. **Background Thread Start:** Launch ACP server in daemon thread
-4. **Server Ready Check:** Poll localhost:port until server responds
-5. **Platform Registration:** POST to `/platform/agents/register` with agent data
-6. **Platform Verification:** Platform immediately calls agent to verify connection
-7. **Callback Execution:** Call `on_register` callback if successful
-8. **Main Thread Block:** `server.run()` keeps main thread alive
+2. **ACP Server Setup:** Create server instance and register named agent handler function
+3. **Logging Configuration:** Set up PingFilter to hide /ping requests from logs
+4. **Background Thread Start:** Launch ACP server in daemon thread
+5. **Server Ready Check:** Poll localhost:port until server responds
+6. **Platform Registration:** POST to `/platform/agents/register` with agent data
+7. **Platform Verification:** Platform immediately calls agent to verify connection
+8. **Callback Execution:** Call `on_register` callback if successful
+9. **Main Thread Block:** `server.run()` keeps main thread alive
 
 ### Integration Patterns
 **SDK Architecture:** The Agent mesh SDK wraps the ACP server, handles platform registration, and provides a simple interface for agent developers.
+
+**Logging Implementation:**
+```python
+class PingFilter(logging.Filter):
+    """Filter to hide /ping requests from logs."""
+    
+    def filter(self, record):
+        message = record.getMessage() if hasattr(record, 'getMessage') else str(record.msg)
+        return "/ping" not in message
+
+# Usage in SDK startup
+ping_filter = PingFilter()
+logging.getLogger("uvicorn.access").addFilter(ping_filter)
+```
 
 **Technical Implementation:**
 ```python
@@ -331,7 +351,7 @@ class AgentSDK:
         self._setup_acp_agent()
     
     def _setup_acp_agent(self):
-        @self.server.agent()
+        @self.server.agent(name=self.agent_name)
         async def agent_handler(input: list[Message], context) -> AsyncGenerator:
             # Call user's process function
             result = self.process_function(input)
@@ -1471,15 +1491,13 @@ class SecurityGuidelines:
 **File Structure:**
 ```
 mesh_sdk/
-├── platform/
-│   └── core/
-│   └── util/
-│   └── ...../
-├── agent/
-│   └── examples/
-│   └── ...../
-├── docs/
-└── README.md
+├── mesh_platform/src/          # Platform core implementation
+├── mesh_agent/src/             # Agent SDK implementation
+├── examples/                   # Example agents and usage
+├── docs/                       # Project documentation
+│   └── spec.md                # This specification
+├── CLAUDE.md                  # AI development instructions
+└── pyproject.toml            # uv package configuration
 ```
 
 ## Success Metrics
@@ -1642,8 +1660,9 @@ required_packages = ["acp-sdk", "portpicker", "requests"]
 ### Essential File Structure
 ```
 mesh_sdk/
-├── platform/src/           # Platform core (ACP gateway)
-├── agent/src/              # Agent SDK (ACP server wrapper)
+├── mesh_platform/src/      # Platform core (ACP gateway)
+├── mesh_agent/src/         # Agent SDK (ACP server wrapper)
+├── examples/               # Example agents and usage
 ├── docs/
 │   └── spec.md            # This complete specification
 ├── CLAUDE.md              # Project instructions for AI

@@ -2,6 +2,8 @@
 
 import logging
 import os
+
+logger = logging.getLogger(__name__)
 import secrets
 import threading
 import time
@@ -311,9 +313,66 @@ class AgentSDK:
                 self.callbacks["on_error"](e)
             raise
 
-    def stop(self) -> None:
-        """Stop the agent gracefully."""
-        if "on_shutdown" in self.callbacks:
-            self.callbacks["on_shutdown"]("programmatic_request")
+    def stop(self, deregister: bool = True) -> None:
+        """Stop the agent gracefully.
+        
+        Args:
+            deregister: If True, deregister from platform before stopping
+        """
+        try:
+            # Call shutdown callback before deregistration
+            if "on_shutdown" in self.callbacks:
+                self.callbacks["on_shutdown"]("programmatic_request")
+            
+            # Deregister from platform if requested and we're registered
+            if deregister and self._registered:
+                self._deregister_from_platform()
+                
+        except Exception as e:
+            logger.error(f"Error during agent shutdown: {e}")
+            if "on_error" in self.callbacks:
+                self.callbacks["on_error"](e)
+
+    def deregister(self) -> bool:
+        """Manually deregister agent from platform without stopping.
+        
+        Returns:
+            bool: True if deregistration was successful, False otherwise
+        """
+        try:
+            if not self._registered:
+                logger.warning("Agent is not registered with platform")
+                return False
+                
+            self._deregister_from_platform()
+            return not self._registered  # Will be False if deregistration succeeded
+            
+        except Exception as e:
+            logger.error(f"Error during manual deregistration: {e}")
+            if "on_error" in self.callbacks:
+                self.callbacks["on_error"](e)
+            return False
+    
+    def _deregister_from_platform(self) -> None:
+        """Deregister agent from platform."""
+        try:
+            response = requests.delete(
+                f"{self.platform_url}/platform/agents/{self.agent_name}",
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"Agent '{self.agent_name}' deregistered successfully")
+                self._registered = False
+            elif response.status_code == 404:
+                logger.warning(f"Agent '{self.agent_name}' was not found on platform (already removed)")
+                self._registered = False
+            else:
+                logger.error(f"Failed to deregister agent: {response.status_code} - {response.text}")
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error deregistering from platform: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error during deregistration: {e}")
         # Note: ACP server doesn't have a clean shutdown method
         # This would need to be implemented based on the actual server implementation

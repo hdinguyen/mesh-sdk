@@ -20,10 +20,10 @@ logger = logging.getLogger(__name__)
 
 class PingFilter(logging.Filter):
     """Filter to hide /ping requests from logs."""
-    
+
     def filter(self, record):
         # Hide logs that contain "/ping" in the message
-        message = record.getMessage() if hasattr(record, 'getMessage') else str(record.msg)
+        message = record.getMessage() if hasattr(record, "getMessage") else str(record.msg)
         return "/ping" not in message
 
 class PlatformCore:
@@ -39,11 +39,42 @@ class PlatformCore:
         # Configure logging to hide /ping requests
         ping_filter = PingFilter()
         logging.getLogger("httpx").addFilter(ping_filter)
-        
+
         self.redis_client = RedisClient(host=redis_host, port=redis_port)
         self.app = FastAPI(title="Agent Mesh Platform", version="0.1.0")
         self.ping_tasks: dict[str, asyncio.Task] = {}  # Track ping tasks per agent
         self._setup_routes()
+
+    async def _restore_existing_agents(self) -> None:
+        """Restore ping tasks for existing agents in Redis on startup."""
+        try:
+            existing_agents = self.redis_client.list_agents()
+            logger.info(f"Found {len(existing_agents)} existing agents in Redis")
+
+            for agent in existing_agents:
+                agent_name = agent.get("agent_name")
+                if not agent_name:
+                    continue
+
+                try:
+                    # Verify agent is still reachable
+                    await self._verify_agent_connection(agent)
+
+                    # Start ping loop for reachable agents
+                    await self._start_agent_ping_loop(agent)
+                    logger.info(f"Restored ping task for agent '{agent_name}'")
+
+                except Exception as e:
+                    # If agent is unreachable, mark as inactive but don't delete
+                    logger.warning(f"Agent '{agent_name}' is unreachable on startup: {e}")
+                    self.redis_client.update_agent_status(agent_name, "inactive")
+
+        except Exception as e:
+            logger.error(f"Error restoring existing agents: {e}")
+
+    async def _startup_tasks(self) -> None:
+        """Run startup tasks for the platform."""
+        await self._restore_existing_agents()
 
     def _setup_routes(self) -> None:
         """Setup FastAPI routes."""
@@ -89,10 +120,32 @@ class PlatformCore:
 
                 # Try to register agent
                 if not self.redis_client.register_agent(agent_data):
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Agent '{agent_data['agent_name']}' already exists",
-                    )
+                    # Check if agent exists but ping task is missing (after platform restart)
+                    agent_name = agent_data["agent_name"]
+                    existing_agent = self.redis_client.get_agent(agent_name)
+
+                    if existing_agent and agent_name not in self.ping_tasks:
+                        # Agent exists in Redis but not in ping_tasks - likely after restart
+                        logger.info(f"Agent '{agent_name}' exists in Redis but missing ping task - re-initializing")
+                        try:
+                            # Update the existing agent data
+                            self.redis_client.delete_agent(agent_name)
+                            if not self.redis_client.register_agent(agent_data):
+                                raise HTTPException(
+                                    status_code=500,
+                                    detail=f"Failed to re-register agent '{agent_name}'",
+                                )
+                        except Exception as e:
+                            logger.error(f"Failed to re-initialize agent '{agent_name}': {e}")
+                            raise HTTPException(
+                                status_code=409,
+                                detail=f"Agent '{agent_name}' already exists and could not be re-initialized",
+                            )
+                    else:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"Agent '{agent_name}' already exists",
+                        )
 
                 # Verify agent connection
                 try:
@@ -268,6 +321,44 @@ class PlatformCore:
                 }
             )
 
+        @self.app.delete("/platform/agents/{agent_name}")
+        async def delete_agent(agent_name: str):
+            """Delete a specific agent from the platform."""
+            try:
+                # Check if agent exists
+                agent = self.redis_client.get_agent(agent_name)
+                if not agent:
+                    raise HTTPException(status_code=404, detail="Agent not found")
+
+                # Cancel ping task for this agent if it exists
+                if agent_name in self.ping_tasks:
+                    logger.info(f"Cancelling ping task for agent '{agent_name}'")
+                    self.ping_tasks[agent_name].cancel()
+                    del self.ping_tasks[agent_name]
+
+                # Delete agent from Redis
+                success = self.redis_client.delete_agent(agent_name)
+
+                if success:
+                    logger.info(f"Successfully deleted agent '{agent_name}' from platform")
+                    return JSONResponse(
+                        status_code=200,
+                        content={
+                            "message": f"Agent '{agent_name}' deleted successfully",
+                            "agent_name": agent_name,
+                        },
+                    )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to delete agent from storage"
+                )
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error deleting agent '{agent_name}': {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
         @self.app.delete("/platform/agents/cleanup")
         async def cleanup_all_agents():
             """Clean up all agents from the platform."""
@@ -277,12 +368,12 @@ class PlatformCore:
                     logger.info(f"Cancelling ping task for agent '{agent_name}'")
                     task.cancel()
                 self.ping_tasks.clear()
-                
+
                 # Delete all agents from Redis
                 deleted_count = self.redis_client.cleanup_all_agents()
-                
+
                 logger.info(f"Cleaned up {deleted_count} agents from platform")
-                
+
                 return JSONResponse(
                     status_code=200,
                     content={
@@ -290,7 +381,7 @@ class PlatformCore:
                         "deleted_count": deleted_count,
                     },
                 )
-                
+
             except Exception as e:
                 logger.error(f"Error during cleanup: {e}")
                 raise HTTPException(status_code=500, detail="Internal server error")
@@ -444,6 +535,14 @@ class PlatformCore:
     def run(self, host: str = "0.0.0.0", port: int = 8000) -> None:
         """Run the platform server."""
         import uvicorn
+
+        # Add startup event handler
+        @self.app.on_event("startup")
+        async def startup_event():
+            """Handle platform startup tasks."""
+            logger.info("Platform starting up - restoring existing agents...")
+            await self._startup_tasks()
+            logger.info("Platform startup complete")
 
         logger.info(f"Starting Agent Mesh Platform on {host}:{port}")
         uvicorn.run(self.app, host=host, port=port)
