@@ -2,8 +2,6 @@
 
 import logging
 import os
-
-logger = logging.getLogger(__name__)
 import secrets
 import threading
 import time
@@ -23,6 +21,8 @@ from .exceptions import (
     PlatformConnectionError,
     PlatformUnavailableError,
 )
+
+logger = logging.getLogger(__name__)
 
 REQUIRED_REGISTRATION_FIELDS = {
     "agent_name": {
@@ -58,11 +58,12 @@ REQUIRED_REGISTRATION_FIELDS = {
 
 class PingFilter(logging.Filter):
     """Filter to hide /ping requests from logs."""
-    
+
     def filter(self, record):
         # Hide logs that contain "/ping" in the message
         message = record.getMessage() if hasattr(record, 'getMessage') else str(record.msg)
         return "/ping" not in message
+
 
 class AgentSDK:
     """Agent SDK for seamless ACP protocol integration."""
@@ -79,6 +80,10 @@ class AgentSDK:
         description: str = "",
         tags: list[str] | None = None,
         contact: str = "",
+        metadata: dict | None = None,
+        input_content_types: list[str] | None = None,
+        output_content_types: list[str] | None = None,
+        url: str | None = None,
     ):
         """Initialize Agent SDK.
 
@@ -93,6 +98,10 @@ class AgentSDK:
             description: Agent description
             tags: Optional categorization tags
             contact: Optional contact information
+            metadata: Optional additional metadata dictionary
+            input_content_types: List of supported input content types (default: ["*/*"])
+            output_content_types: List of supported output content types (default: ["*/*"])
+            url: Optional URL for the agent (defaults to auto-generated acp_base_url)
         """
         self.agent_name = agent_name
         self.agent_type = agent_type
@@ -102,6 +111,26 @@ class AgentSDK:
         self.description = description
         self.tags = tags or []
         self.contact = contact
+        self.metadata = metadata or {
+            "annotations": None,
+            "documentation": None,
+            "license": None,
+            "programming_language": None,
+            "natural_languages": None,
+            "framework": None,
+            "capabilities": None,
+            "domains": None,
+            "tags": None,
+            "created_at": None,
+            "updated_at": None,
+            "author": None,
+            "contributors": None,
+            "links": None,
+            "dependencies": None,
+            "recommended_models": None
+        }
+        self.input_content_types = input_content_types or ["*/*"]
+        self.output_content_types = output_content_types or ["*/*"]
         self.callbacks = callbacks or {}
 
         # Resolve platform URL with priority: env var -> parameter -> default
@@ -115,6 +144,9 @@ class AgentSDK:
         # Auto-allocate port for ACP server
         self.port = portpicker.pick_unused_port()
         self.acp_base_url = f"http://localhost:{self.port}"
+
+        # Set URL with priority: parameter -> auto-generated acp_base_url
+        self.url = url or self.acp_base_url
 
         # Generate auth token for platform communication
         self.auth_token = secrets.token_urlsafe(32)
@@ -234,6 +266,11 @@ class AgentSDK:
             "description": self.description,
             "tags": self.tags,
             "contact": self.contact,
+            "metadata": self.metadata,
+            "input_content_types": self.input_content_types,
+            "output_content_types": self.output_content_types,
+            "url": self.url,
+            "port": self.port,
         }
 
         try:
@@ -281,7 +318,7 @@ class AgentSDK:
             # Configure logging to hide /ping requests
             ping_filter = PingFilter()
             logging.getLogger("uvicorn.access").addFilter(ping_filter)
-            
+
             # Start ACP server in background thread
             server_thread = threading.Thread(
                 target=lambda: self.server.run(port=self.port), daemon=True
@@ -315,7 +352,7 @@ class AgentSDK:
 
     def stop(self, deregister: bool = True) -> None:
         """Stop the agent gracefully.
-        
+
         Args:
             deregister: If True, deregister from platform before stopping
         """
@@ -323,11 +360,11 @@ class AgentSDK:
             # Call shutdown callback before deregistration
             if "on_shutdown" in self.callbacks:
                 self.callbacks["on_shutdown"]("programmatic_request")
-            
+
             # Deregister from platform if requested and we're registered
             if deregister and self._registered:
                 self._deregister_from_platform()
-                
+
         except Exception as e:
             logger.error(f"Error during agent shutdown: {e}")
             if "on_error" in self.callbacks:
@@ -335,7 +372,7 @@ class AgentSDK:
 
     def deregister(self) -> bool:
         """Manually deregister agent from platform without stopping.
-        
+
         Returns:
             bool: True if deregistration was successful, False otherwise
         """
@@ -343,16 +380,16 @@ class AgentSDK:
             if not self._registered:
                 logger.warning("Agent is not registered with platform")
                 return False
-                
+
             self._deregister_from_platform()
             return not self._registered  # Will be False if deregistration succeeded
-            
+
         except Exception as e:
             logger.error(f"Error during manual deregistration: {e}")
             if "on_error" in self.callbacks:
                 self.callbacks["on_error"](e)
             return False
-    
+
     def _deregister_from_platform(self) -> None:
         """Deregister agent from platform."""
         try:
@@ -360,7 +397,7 @@ class AgentSDK:
                 f"{self.platform_url}/platform/agents/{self.agent_name}",
                 timeout=10
             )
-            
+
             if response.status_code == 200:
                 logger.info(f"Agent '{self.agent_name}' deregistered successfully")
                 self._registered = False
@@ -369,7 +406,7 @@ class AgentSDK:
                 self._registered = False
             else:
                 logger.error(f"Failed to deregister agent: {response.status_code} - {response.text}")
-                
+
         except requests.exceptions.RequestException as e:
             logger.error(f"Error deregistering from platform: {e}")
         except Exception as e:

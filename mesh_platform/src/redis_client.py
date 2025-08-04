@@ -1,7 +1,9 @@
 """Redis client for platform data storage."""
 
 import json
+import uuid
 from datetime import UTC, datetime
+from typing import Optional
 
 import redis
 
@@ -261,3 +263,359 @@ class RedisClient:
 
         self.redis.delete(f"session:{session_id}")
         return True
+
+    # Flow Management Methods
+
+    def create_flow(self, name: str) -> str:
+        """Create a new flow.
+
+        Args:
+            name: Flow name
+
+        Returns:
+            Flow ID
+        """
+        flow_id = str(uuid.uuid4())
+        flow_data = {
+            "flow_id": flow_id,
+            "name": name,
+            "created_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+
+        # Store flow definition
+        self.redis.hset(f"flow:{flow_id}", mapping=flow_data)
+
+        # Add to flow list
+        self.redis.sadd("flows", flow_id)
+
+        # Initialize empty agents list
+        self.redis.delete(f"flow:{flow_id}:agents")
+
+        return flow_id
+
+    def get_flow(self, flow_id: str) -> Optional[dict]:
+        """Get flow by ID.
+
+        Args:
+            flow_id: Flow identifier
+
+        Returns:
+            Flow data dictionary or None if not found
+        """
+        if not self.redis.exists(f"flow:{flow_id}"):
+            return None
+
+        flow_data = self.redis.hgetall(f"flow:{flow_id}")
+
+        # Get agents list
+        agents_data = self.redis.lrange(f"flow:{flow_id}:agents", 0, -1)
+        agents = []
+        for agent_json in agents_data:
+            try:
+                agents.append(json.loads(agent_json))
+            except json.JSONDecodeError:
+                continue
+
+        flow_data["agents"] = agents
+        return flow_data
+
+    def list_flows(self) -> list[dict]:
+        """List all flows.
+
+        Returns:
+            List of flow data dictionaries
+        """
+        flow_ids = self.redis.smembers("flows")
+        flows = []
+
+        for flow_id in flow_ids:
+            flow_data = self.get_flow(flow_id)
+            if flow_data:
+                flows.append(flow_data)
+
+        return flows
+
+    def update_flow(self, flow_id: str, **updates) -> bool:
+        """Update flow data.
+
+        Args:
+            flow_id: Flow identifier
+            **updates: Fields to update
+
+        Returns:
+            True if updated successfully, False if flow not found
+        """
+        if not self.redis.exists(f"flow:{flow_id}"):
+            return False
+
+        updates["updated_at"] = datetime.now(UTC).isoformat()
+        self.redis.hset(f"flow:{flow_id}", mapping=updates)
+        return True
+
+    def delete_flow(self, flow_id: str) -> bool:
+        """Delete a flow.
+
+        Args:
+            flow_id: Flow identifier
+
+        Returns:
+            True if deleted successfully, False if flow not found
+        """
+        if not self.redis.exists(f"flow:{flow_id}"):
+            return False
+
+        # Delete flow data
+        self.redis.delete(f"flow:{flow_id}")
+        self.redis.delete(f"flow:{flow_id}:agents")
+
+        # Remove from flow list
+        self.redis.srem("flows", flow_id)
+
+        # Clean up executions (keep recent ones for debugging)
+        execution_keys = self.redis.keys(f"flow:{flow_id}:execution:*")
+        if execution_keys:
+            self.redis.delete(*execution_keys)
+
+        return True
+
+    def add_agent_to_flow(
+        self,
+        flow_id: str,
+        agent_name: str,
+        upstream_agents: list[str] = None,
+        required: bool = True,
+    ) -> bool:
+        """Add agent to flow.
+
+        Args:
+            flow_id: Flow identifier
+            agent_name: Agent name
+            upstream_agents: List of upstream agent names
+            required: Whether agent is required
+
+        Returns:
+            True if added successfully, False if flow not found or agent already exists
+        """
+        if not self.redis.exists(f"flow:{flow_id}"):
+            return False
+
+        # Check if agent already exists in flow
+        agents_data = self.redis.lrange(f"flow:{flow_id}:agents", 0, -1)
+        for agent_json in agents_data:
+            try:
+                agent_data = json.loads(agent_json)
+                if agent_data.get("agent_name") == agent_name:
+                    return False  # Agent already exists
+            except json.JSONDecodeError:
+                continue
+
+        agent_data = {
+            "agent_name": agent_name,
+            "upstream_agents": upstream_agents or [],
+            "required": required,
+            "added_at": datetime.now(UTC).isoformat(),
+        }
+
+        # Add agent to flow
+        self.redis.lpush(f"flow:{flow_id}:agents", json.dumps(agent_data))
+
+        # Update flow timestamp
+        self.update_flow(flow_id)
+
+        return True
+
+    def remove_agent_from_flow(self, flow_id: str, agent_name: str) -> bool:
+        """Remove agent from flow.
+
+        Args:
+            flow_id: Flow identifier
+            agent_name: Agent name
+
+        Returns:
+            True if removed successfully, False if flow or agent not found
+        """
+        if not self.redis.exists(f"flow:{flow_id}"):
+            return False
+
+        # Get all agents
+        agents_data = self.redis.lrange(f"flow:{flow_id}:agents", 0, -1)
+        updated_agents = []
+        found = False
+
+        for agent_json in agents_data:
+            try:
+                agent_data = json.loads(agent_json)
+                if agent_data.get("agent_name") != agent_name:
+                    updated_agents.append(agent_json)
+                else:
+                    found = True
+            except json.JSONDecodeError:
+                continue
+
+        if not found:
+            return False
+
+        # Replace agents list
+        self.redis.delete(f"flow:{flow_id}:agents")
+        if updated_agents:
+            self.redis.rpush(f"flow:{flow_id}:agents", *updated_agents)
+
+        # Update flow timestamp
+        self.update_flow(flow_id)
+
+        return True
+
+    def get_flow_agents(self, flow_id: str) -> list[dict]:
+        """Get agents in flow.
+
+        Args:
+            flow_id: Flow identifier
+
+        Returns:
+            List of agent configurations
+        """
+        if not self.redis.exists(f"flow:{flow_id}"):
+            return []
+
+        agents_data = self.redis.lrange(f"flow:{flow_id}:agents", 0, -1)
+        agents = []
+
+        for agent_json in agents_data:
+            try:
+                agents.append(json.loads(agent_json))
+            except json.JSONDecodeError:
+                continue
+
+        return agents
+
+    def create_flow_execution(self, flow_id: str, input_data: dict) -> str:
+        """Create a new flow execution.
+
+        Args:
+            flow_id: Flow identifier
+            input_data: Input data for execution
+
+        Returns:
+            Execution ID
+        """
+        execution_id = str(uuid.uuid4())
+        execution_data = {
+            "execution_id": execution_id,
+            "flow_id": flow_id,
+            "status": "pending",
+            "input_data": json.dumps(input_data),
+            "output_data": json.dumps({}),
+            "started_at": datetime.now(UTC).isoformat(),
+            "completed_at": "",
+            "error": "",
+            "agent_results": json.dumps({}),
+        }
+
+        # Store execution data
+        self.redis.hset(
+            f"flow:{flow_id}:execution:{execution_id}", mapping=execution_data
+        )
+
+        # Add to executions list (maintain recent 100)
+        self.redis.lpush(f"flow:{flow_id}:executions", execution_id)
+        self.redis.ltrim(
+            f"flow:{flow_id}:executions", 0, 99
+        )  # Keep only 100 recent executions
+
+        return execution_id
+
+    def get_flow_execution(self, flow_id: str, execution_id: str) -> Optional[dict]:
+        """Get flow execution by ID.
+
+        Args:
+            flow_id: Flow identifier
+            execution_id: Execution identifier
+
+        Returns:
+            Execution data dictionary or None if not found
+        """
+        if not self.redis.exists(f"flow:{flow_id}:execution:{execution_id}"):
+            return None
+
+        execution_data = self.redis.hgetall(f"flow:{flow_id}:execution:{execution_id}")
+
+        # Parse JSON fields
+        for field in ["input_data", "output_data", "agent_results"]:
+            if field in execution_data and execution_data[field]:
+                try:
+                    execution_data[field] = json.loads(execution_data[field])
+                except json.JSONDecodeError:
+                    execution_data[field] = {}
+
+        return execution_data
+
+    def update_flow_execution(self, flow_id: str, execution_id: str, **updates) -> bool:
+        """Update flow execution.
+
+        Args:
+            flow_id: Flow identifier
+            execution_id: Execution identifier
+            **updates: Fields to update
+
+        Returns:
+            True if updated successfully, False if execution not found
+        """
+        if not self.redis.exists(f"flow:{flow_id}:execution:{execution_id}"):
+            return False
+
+        # Convert dict fields to JSON
+        for field in ["output_data", "agent_results"]:
+            if field in updates and isinstance(updates[field], dict):
+                updates[field] = json.dumps(updates[field])
+
+        self.redis.hset(f"flow:{flow_id}:execution:{execution_id}", mapping=updates)
+        return True
+
+    def list_flow_executions(self, flow_id: str, limit: int = 10) -> list[dict]:
+        """List recent flow executions.
+
+        Args:
+            flow_id: Flow identifier
+            limit: Maximum number of executions to return
+
+        Returns:
+            List of execution data dictionaries
+        """
+        if not self.redis.exists(f"flow:{flow_id}:executions"):
+            return []
+
+        execution_ids = self.redis.lrange(f"flow:{flow_id}:executions", 0, limit - 1)
+        executions = []
+
+        for execution_id in execution_ids:
+            execution_data = self.get_flow_execution(flow_id, execution_id)
+            if execution_data:
+                executions.append(execution_data)
+
+        return executions
+
+    def update_agent_result(
+        self, flow_id: str, execution_id: str, agent_name: str, result: dict
+    ) -> bool:
+        """Update agent result in flow execution.
+
+        Args:
+            flow_id: Flow identifier
+            execution_id: Execution identifier
+            agent_name: Agent name
+            result: Agent execution result
+
+        Returns:
+            True if updated successfully, False if execution not found
+        """
+        execution_data = self.get_flow_execution(flow_id, execution_id)
+        if not execution_data:
+            return False
+
+        agent_results = execution_data.get("agent_results", {})
+        agent_results[agent_name] = result
+
+        return self.update_flow_execution(
+            flow_id, execution_id, agent_results=agent_results
+        )

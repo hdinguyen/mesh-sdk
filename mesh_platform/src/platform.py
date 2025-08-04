@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .redis_client import RedisClient
+from .flow_engine import FlowExecutionEngine
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -23,8 +24,11 @@ class PingFilter(logging.Filter):
 
     def filter(self, record):
         # Hide logs that contain "/ping" in the message
-        message = record.getMessage() if hasattr(record, "getMessage") else str(record.msg)
+        message = (
+            record.getMessage() if hasattr(record, "getMessage") else str(record.msg)
+        )
         return "/ping" not in message
+
 
 class PlatformCore:
     """Platform core for managing agents and routing ACP requests."""
@@ -41,6 +45,7 @@ class PlatformCore:
         logging.getLogger("httpx").addFilter(ping_filter)
 
         self.redis_client = RedisClient(host=redis_host, port=redis_port)
+        self.flow_engine = FlowExecutionEngine(self.redis_client)
         self.app = FastAPI(title="Agent Mesh Platform", version="0.1.0")
         self.ping_tasks: dict[str, asyncio.Task] = {}  # Track ping tasks per agent
         self._setup_routes()
@@ -66,7 +71,9 @@ class PlatformCore:
 
                 except Exception as e:
                     # If agent is unreachable, mark as inactive but don't delete
-                    logger.warning(f"Agent '{agent_name}' is unreachable on startup: {e}")
+                    logger.warning(
+                        f"Agent '{agent_name}' is unreachable on startup: {e}"
+                    )
                     self.redis_client.update_agent_status(agent_name, "inactive")
 
         except Exception as e:
@@ -117,6 +124,17 @@ class PlatformCore:
                 agent_data["capabilities"] = json.dumps(agent_data["capabilities"])
                 if "tags" in agent_data:
                     agent_data["tags"] = json.dumps(agent_data.get("tags", []))
+                
+                # Store metadata as JSON string for Redis if present
+                if "metadata" in agent_data:
+                    agent_data["metadata"] = json.dumps(agent_data["metadata"]) if agent_data["metadata"] is not None else json.dumps({})
+                
+                # Store content types as JSON strings for Redis if present
+                if "input_content_types" in agent_data:
+                    agent_data["input_content_types"] = json.dumps(agent_data["input_content_types"]) if agent_data["input_content_types"] is not None else json.dumps(["*/*"])
+                
+                if "output_content_types" in agent_data:
+                    agent_data["output_content_types"] = json.dumps(agent_data["output_content_types"]) if agent_data["output_content_types"] is not None else json.dumps(["*/*"])
 
                 # Try to register agent
                 if not self.redis_client.register_agent(agent_data):
@@ -126,7 +144,9 @@ class PlatformCore:
 
                     if existing_agent and agent_name not in self.ping_tasks:
                         # Agent exists in Redis but not in ping_tasks - likely after restart
-                        logger.info(f"Agent '{agent_name}' exists in Redis but missing ping task - re-initializing")
+                        logger.info(
+                            f"Agent '{agent_name}' exists in Redis but missing ping task - re-initializing"
+                        )
                         try:
                             # Update the existing agent data
                             self.redis_client.delete_agent(agent_name)
@@ -136,7 +156,9 @@ class PlatformCore:
                                     detail=f"Failed to re-register agent '{agent_name}'",
                                 )
                         except Exception as e:
-                            logger.error(f"Failed to re-initialize agent '{agent_name}': {e}")
+                            logger.error(
+                                f"Failed to re-initialize agent '{agent_name}': {e}"
+                            )
                             raise HTTPException(
                                 status_code=409,
                                 detail=f"Agent '{agent_name}' already exists and could not be re-initialized",
@@ -197,6 +219,18 @@ class PlatformCore:
                     if isinstance(tags, str):
                         tags = json.loads(tags)
 
+                    metadata = agent.get("metadata", {})
+                    if isinstance(metadata, str):
+                        metadata = json.loads(metadata)
+
+                    input_content_types = agent.get("input_content_types", ["*/*"])
+                    if isinstance(input_content_types, str):
+                        input_content_types = json.loads(input_content_types)
+
+                    output_content_types = agent.get("output_content_types", ["*/*"])
+                    if isinstance(output_content_types, str):
+                        output_content_types = json.loads(output_content_types)
+
                     acp_agent = {
                         "name": agent["agent_name"],
                         "version": agent.get("version", "1.0.0"),
@@ -204,6 +238,11 @@ class PlatformCore:
                         "capabilities": capabilities,
                         "tags": tags,
                         "contact": agent.get("contact", ""),
+                        "metadata": metadata,
+                        "input_content_types": input_content_types,
+                        "output_content_types": output_content_types,
+                        "url": agent.get("url", ""),
+                        "port": agent.get("port", 0),
                     }
                     acp_agents.append(acp_agent)
 
@@ -222,6 +261,18 @@ class PlatformCore:
                     raise HTTPException(status_code=404, detail="Agent not found")
 
                 # Convert to ACP manifest format
+                metadata = agent.get("metadata", {})
+                if isinstance(metadata, str):
+                    metadata = json.loads(metadata)
+
+                input_content_types = agent.get("input_content_types", ["*/*"])
+                if isinstance(input_content_types, str):
+                    input_content_types = json.loads(input_content_types)
+
+                output_content_types = agent.get("output_content_types", ["*/*"])
+                if isinstance(output_content_types, str):
+                    output_content_types = json.loads(output_content_types)
+                
                 manifest = {
                     "name": agent["agent_name"],
                     "version": agent.get("version", "1.0.0"),
@@ -230,6 +281,11 @@ class PlatformCore:
                     "tags": agent.get("tags", []),
                     "contact": agent.get("contact", ""),
                     "status": agent.get("status", "unknown"),
+                    "metadata": metadata,
+                    "input_content_types": input_content_types,
+                    "output_content_types": output_content_types,
+                    "url": agent.get("url", ""),
+                    "port": agent.get("port", 0),
                 }
 
                 return JSONResponse(content=manifest)
@@ -340,7 +396,9 @@ class PlatformCore:
                 success = self.redis_client.delete_agent(agent_name)
 
                 if success:
-                    logger.info(f"Successfully deleted agent '{agent_name}' from platform")
+                    logger.info(
+                        f"Successfully deleted agent '{agent_name}' from platform"
+                    )
                     return JSONResponse(
                         status_code=200,
                         content={
@@ -349,8 +407,7 @@ class PlatformCore:
                         },
                     )
                 raise HTTPException(
-                    status_code=500,
-                    detail="Failed to delete agent from storage"
+                    status_code=500, detail="Failed to delete agent from storage"
                 )
 
             except HTTPException:
@@ -384,6 +441,277 @@ class PlatformCore:
 
             except Exception as e:
                 logger.error(f"Error during cleanup: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
+        # Flow Management Endpoints
+
+        @self.app.post("/flows")
+        async def create_flow(request: Request):
+            """Create a new flow."""
+            try:
+                flow_data = await request.json()
+
+                # Validate required fields
+                if "name" not in flow_data:
+                    raise HTTPException(
+                        status_code=400, detail="Missing required field: name"
+                    )
+
+                flow_id = self.redis_client.create_flow(flow_data["name"])
+
+                return JSONResponse(
+                    status_code=201,
+                    content={
+                        "flow_id": flow_id,
+                        "name": flow_data["name"],
+                        "message": "Flow created successfully",
+                    },
+                )
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error creating flow: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
+        @self.app.get("/flows")
+        async def list_flows():
+            """List all flows."""
+            try:
+                flows = self.redis_client.list_flows()
+                return JSONResponse(content={"flows": flows})
+
+            except Exception as e:
+                logger.error(f"Error listing flows: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
+        @self.app.get("/flows/{flow_id}")
+        async def get_flow(flow_id: str):
+            """Get flow details."""
+            try:
+                flow_data = self.redis_client.get_flow(flow_id)
+                if not flow_data:
+                    raise HTTPException(status_code=404, detail="Flow not found")
+
+                return JSONResponse(content=flow_data)
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error getting flow: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
+        @self.app.delete("/flows/{flow_id}")
+        async def delete_flow(flow_id: str):
+            """Delete a flow."""
+            try:
+                success = self.redis_client.delete_flow(flow_id)
+                if not success:
+                    raise HTTPException(status_code=404, detail="Flow not found")
+
+                return JSONResponse(
+                    content={
+                        "message": f"Flow '{flow_id}' deleted successfully",
+                        "flow_id": flow_id,
+                    }
+                )
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error deleting flow: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
+        @self.app.post("/flows/{flow_id}/agents")
+        async def add_agent_to_flow(flow_id: str, request: Request):
+            """Add agent to flow."""
+            try:
+                agent_data = await request.json()
+
+                # Validate required fields
+                if "agent_name" not in agent_data:
+                    raise HTTPException(
+                        status_code=400, detail="Missing required field: agent_name"
+                    )
+
+                agent_name = agent_data["agent_name"]
+                upstream_agents = agent_data.get("upstream_agents", [])
+                required = agent_data.get("required", True)
+
+                # Validate agent exists (warn but don't fail)
+                agent_info = self.redis_client.get_agent(agent_name)
+                if not agent_info:
+                    logger.warning(f"Agent '{agent_name}' not found in registry")
+
+                success = self.redis_client.add_agent_to_flow(
+                    flow_id, agent_name, upstream_agents, required
+                )
+
+                if not success:
+                    # Check if flow exists
+                    flow_data = self.redis_client.get_flow(flow_id)
+                    if not flow_data:
+                        raise HTTPException(status_code=404, detail="Flow not found")
+                    else:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"Agent '{agent_name}' already exists in flow",
+                        )
+
+                return JSONResponse(
+                    content={
+                        "message": f"Agent '{agent_name}' added to flow successfully",
+                        "flow_id": flow_id,
+                        "agent_name": agent_name,
+                        "upstream_agents": upstream_agents,
+                        "required": required,
+                    }
+                )
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error adding agent to flow: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
+        @self.app.get("/flows/{flow_id}/agents")
+        async def get_flow_agents(flow_id: str):
+            """Get agents in flow."""
+            try:
+                # Check if flow exists
+                flow_data = self.redis_client.get_flow(flow_id)
+                if not flow_data:
+                    raise HTTPException(status_code=404, detail="Flow not found")
+
+                agents = self.redis_client.get_flow_agents(flow_id)
+                return JSONResponse(content={"agents": agents})
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error getting flow agents: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
+        @self.app.delete("/flows/{flow_id}/agents/{agent_name}")
+        async def remove_agent_from_flow(flow_id: str, agent_name: str):
+            """Remove agent from flow."""
+            try:
+                success = self.redis_client.remove_agent_from_flow(flow_id, agent_name)
+                if not success:
+                    # Check if flow exists
+                    flow_data = self.redis_client.get_flow(flow_id)
+                    if not flow_data:
+                        raise HTTPException(status_code=404, detail="Flow not found")
+                    else:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"Agent '{agent_name}' not found in flow",
+                        )
+
+                return JSONResponse(
+                    content={
+                        "message": f"Agent '{agent_name}' removed from flow successfully",
+                        "flow_id": flow_id,
+                        "agent_name": agent_name,
+                    }
+                )
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error removing agent from flow: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
+        @self.app.post("/flows/{flow_id}/execute")
+        async def execute_flow(flow_id: str, request: Request):
+            """Execute a flow."""
+            try:
+                execution_data = await request.json()
+                input_data = execution_data.get("input", {})
+
+                # Execute flow via flow engine
+                result = await self.flow_engine.execute_flow(flow_id, input_data)
+
+                return JSONResponse(
+                    content={
+                        "message": "Flow executed successfully",
+                        "flow_id": flow_id,
+                        "result": result,
+                    }
+                )
+
+            except ValueError as e:
+                # Flow not found or invalid
+                raise HTTPException(status_code=404, detail=str(e))
+            except RuntimeError as e:
+                # Flow execution error (health check failed, agent errors, etc.)
+                raise HTTPException(status_code=400, detail=str(e))
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error executing flow: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
+        @self.app.get("/flows/{flow_id}/executions")
+        async def list_flow_executions(flow_id: str, limit: int = 10):
+            """List recent flow executions."""
+            try:
+                # Check if flow exists
+                flow_data = self.redis_client.get_flow(flow_id)
+                if not flow_data:
+                    raise HTTPException(status_code=404, detail="Flow not found")
+
+                executions = self.redis_client.list_flow_executions(flow_id, limit)
+                return JSONResponse(content={"executions": executions})
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error listing flow executions: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
+        @self.app.get("/flows/{flow_id}/executions/{execution_id}")
+        async def get_flow_execution(flow_id: str, execution_id: str):
+            """Get flow execution details."""
+            try:
+                execution_data = self.redis_client.get_flow_execution(
+                    flow_id, execution_id
+                )
+                if not execution_data:
+                    raise HTTPException(status_code=404, detail="Execution not found")
+
+                return JSONResponse(content=execution_data)
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error getting flow execution: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
+        @self.app.get("/flows/{flow_id}/executions/{execution_id}/debug")
+        async def get_flow_execution_debug(flow_id: str, execution_id: str):
+            """Get detailed flow execution debug information."""
+            try:
+                execution_data = self.redis_client.get_flow_execution(
+                    flow_id, execution_id
+                )
+                if not execution_data:
+                    raise HTTPException(status_code=404, detail="Execution not found")
+
+                # Add additional debug information
+                debug_info = {
+                    "execution": execution_data,
+                    "timeline": [],  # TODO: Add execution timeline
+                    "agent_details": execution_data.get("agent_results", {}),
+                    "flow_definition": self.redis_client.get_flow(flow_id),
+                }
+
+                return JSONResponse(content=debug_info)
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error getting flow execution debug info: {e}")
                 raise HTTPException(status_code=500, detail="Internal server error")
 
     async def _verify_agent_connection(self, agent_data: dict) -> None:
