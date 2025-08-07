@@ -10,6 +10,17 @@ authors = [
     {name = "Mesh SDK Team", email = "team@mesh-sdk.dev"}
 ]
 readme = "README.md"
+license = {file = "LICENSE"}
+keywords = ["agent", "acp", "protocol", "mesh", "orchestration", "workflow"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Distributed Computing",
+]
 requires-python = ">=3.12"
 dependencies = [
     "acp-sdk",
@@ -27,8 +38,15 @@ dev = [
     "ruff",
 ]
 
+[project.urls]
+Homepage = "https://github.com/mesh-sdk/mesh-sdk"
+Documentation = "https://github.com/mesh-sdk/mesh-sdk/blob/main/docs/"
+Repository = "https://github.com/mesh-sdk/mesh-sdk"
+Issues = "https://github.com/mesh-sdk/mesh-sdk/issues"
+
 [tool.hatch.build.targets.wheel]
 packages = ["mesh_platform", "mesh_agent"]
+include = ["mesh_sdk.py"]
 
 [project.scripts]
 mesh-platform = "mesh_platform.src.__main__:main"
