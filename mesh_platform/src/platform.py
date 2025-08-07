@@ -14,6 +14,27 @@ from fastapi.responses import JSONResponse
 from .redis_client import RedisClient
 from .flow_engine import FlowExecutionEngine
 
+
+# Flow Import/Export Error Classes
+class FlowImportExportError(Exception):
+    """Base exception for import/export operations"""
+    pass
+
+
+class FlowNameConflictError(FlowImportExportError):
+    """Flow name already exists during import"""
+    pass
+
+
+class InvalidFlowDataError(FlowImportExportError):
+    """Invalid flow data format during import"""
+    pass
+
+
+class FlowNotFoundError(FlowImportExportError):
+    """Flow not found during export"""
+    pass
+
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -457,13 +478,17 @@ class PlatformCore:
                         status_code=400, detail="Missing required field: name"
                     )
 
-                flow_id = self.redis_client.create_flow(flow_data["name"])
+                flow_id = self.redis_client.create_flow(
+                    name=flow_data["name"],
+                    description=flow_data.get("description", "")
+                )
 
                 return JSONResponse(
                     status_code=201,
                     content={
                         "flow_id": flow_id,
                         "name": flow_data["name"],
+                        "description": flow_data.get("description", ""),
                         "message": "Flow created successfully",
                     },
                 )
@@ -537,6 +562,7 @@ class PlatformCore:
                 agent_name = agent_data["agent_name"]
                 upstream_agents = agent_data.get("upstream_agents", [])
                 required = agent_data.get("required", True)
+                description = agent_data.get("description", "")
 
                 # Validate agent exists (warn but don't fail)
                 agent_info = self.redis_client.get_agent(agent_name)
@@ -544,7 +570,7 @@ class PlatformCore:
                     logger.warning(f"Agent '{agent_name}' not found in registry")
 
                 success = self.redis_client.add_agent_to_flow(
-                    flow_id, agent_name, upstream_agents, required
+                    flow_id, agent_name, upstream_agents, required, description
                 )
 
                 if not success:
@@ -565,6 +591,7 @@ class PlatformCore:
                         "agent_name": agent_name,
                         "upstream_agents": upstream_agents,
                         "required": required,
+                        "description": description,
                     }
                 )
 
@@ -712,6 +739,77 @@ class PlatformCore:
                 raise
             except Exception as e:
                 logger.error(f"Error getting flow execution debug info: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
+        # Flow Import/Export Endpoints
+
+        @self.app.get("/flows/{flow_id}/export")
+        async def export_flow(flow_id: str):
+            """Export flow definition as JSON."""
+            try:
+                export_data = self.redis_client.export_flow_data(flow_id, platform_version="1.0.0")
+                if not export_data:
+                    raise HTTPException(status_code=404, detail="Flow not found")
+
+                return JSONResponse(content=export_data)
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error exporting flow: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
+        @self.app.post("/flows/import")
+        async def import_flow(request: Request):
+            """Import flow from JSON definition."""
+            try:
+                import_request = await request.json()
+
+                # Validate required fields
+                if "flow_data" not in import_request:
+                    raise HTTPException(
+                        status_code=400, detail="Missing required field: flow_data"
+                    )
+
+                flow_data = import_request["flow_data"]
+                validate_agents = import_request.get("validate_agents", True)
+                overwrite_existing = import_request.get("overwrite_existing", False)
+
+                # Validate flow_data structure
+                if not isinstance(flow_data, dict) or "name" not in flow_data:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="Invalid flow_data: must be object with 'name' field"
+                    )
+
+                try:
+                    flow_id, warnings = self.redis_client.import_flow_data(
+                        flow_data, validate_agents, overwrite_existing
+                    )
+
+                    return JSONResponse(
+                        status_code=201,
+                        content={
+                            "flow_id": flow_id,
+                            "name": flow_data["name"],
+                            "status": "imported",
+                            "agents_added": len(flow_data.get("agents", [])),
+                            "warnings": warnings,
+                            "message": "Flow imported successfully",
+                        },
+                    )
+
+                except ValueError as e:
+                    # Handle flow data validation errors and name conflicts
+                    if "already exists" in str(e):
+                        raise HTTPException(status_code=409, detail=str(e))
+                    else:
+                        raise HTTPException(status_code=400, detail=str(e))
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error importing flow: {e}")
                 raise HTTPException(status_code=500, detail="Internal server error")
 
     async def _verify_agent_connection(self, agent_data: dict) -> None:

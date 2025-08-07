@@ -266,11 +266,13 @@ class RedisClient:
 
     # Flow Management Methods
 
-    def create_flow(self, name: str) -> str:
+    def create_flow(self, name: str, description: str = "", imported_from: str = None) -> str:
         """Create a new flow.
 
         Args:
             name: Flow name
+            description: Optional flow description
+            imported_from: Optional source indication for imported flows
 
         Returns:
             Flow ID
@@ -279,9 +281,13 @@ class RedisClient:
         flow_data = {
             "flow_id": flow_id,
             "name": name,
+            "description": description,
             "created_at": datetime.now(UTC).isoformat(),
             "updated_at": datetime.now(UTC).isoformat(),
         }
+        
+        if imported_from:
+            flow_data["imported_from"] = imported_from
 
         # Store flow definition
         self.redis.hset(f"flow:{flow_id}", mapping=flow_data)
@@ -293,6 +299,22 @@ class RedisClient:
         self.redis.delete(f"flow:{flow_id}:agents")
 
         return flow_id
+
+    def flow_name_exists(self, name: str) -> bool:
+        """Check if a flow name already exists.
+
+        Args:
+            name: Flow name to check
+
+        Returns:
+            True if flow name exists, False otherwise
+        """
+        flow_ids = self.redis.smembers("flows")
+        for flow_id in flow_ids:
+            flow_data = self.redis.hgetall(f"flow:{flow_id}")
+            if flow_data.get("name") == name:
+                return True
+        return False
 
     def get_flow(self, flow_id: str) -> Optional[dict]:
         """Get flow by ID.
@@ -385,6 +407,7 @@ class RedisClient:
         agent_name: str,
         upstream_agents: list[str] = None,
         required: bool = True,
+        description: str = "",
     ) -> bool:
         """Add agent to flow.
 
@@ -393,6 +416,7 @@ class RedisClient:
             agent_name: Agent name
             upstream_agents: List of upstream agent names
             required: Whether agent is required
+            description: Optional agent description
 
         Returns:
             True if added successfully, False if flow not found or agent already exists
@@ -414,6 +438,7 @@ class RedisClient:
             "agent_name": agent_name,
             "upstream_agents": upstream_agents or [],
             "required": required,
+            "description": description,
             "added_at": datetime.now(UTC).isoformat(),
         }
 
@@ -619,3 +644,109 @@ class RedisClient:
         return self.update_flow_execution(
             flow_id, execution_id, agent_results=agent_results
         )
+
+    # Flow Import/Export Methods
+
+    def export_flow_data(self, flow_id: str, platform_version: str = "1.0.0") -> dict | None:
+        """Export flow definition as portable JSON.
+
+        Args:
+            flow_id: Flow identifier
+            platform_version: Platform version for metadata
+
+        Returns:
+            Flow export data dictionary or None if not found
+        """
+        flow_data = self.get_flow(flow_id)
+        if not flow_data:
+            return None
+
+        return {
+            "name": flow_data.get("name", ""),
+            "description": flow_data.get("description", ""),
+            "agents": [
+                {
+                    "agent_name": agent.get("agent_name", ""),
+                    "upstream_agents": agent.get("upstream_agents", []),
+                    "required": agent.get("required", True),
+                    "description": agent.get("description", "")
+                }
+                for agent in flow_data.get("agents", [])
+            ],
+            "metadata": {
+                "exported_at": datetime.now(UTC).isoformat(),
+                "platform_version": platform_version,
+                "agent_count": len(flow_data.get("agents", [])),
+                "original_flow_id": flow_id
+            }
+        }
+
+    def import_flow_data(self, flow_data: dict, validate_agents: bool = True,
+                        overwrite_existing: bool = False) -> tuple[str, list[str]]:
+        """Import flow from JSON definition.
+
+        Args:
+            flow_data: Flow definition data
+            validate_agents: Whether to validate agent existence
+            overwrite_existing: Whether to overwrite if flow name exists
+
+        Returns:
+            Tuple of (flow_id, warnings_list)
+
+        Raises:
+            ValueError: If flow data is invalid or name conflicts exist
+        """
+        # Validate required fields
+        if "name" not in flow_data:
+            error_msg = "Missing required field: name"
+            raise ValueError(error_msg)
+
+        flow_name = flow_data["name"]
+
+        # Check for name conflicts
+        if not overwrite_existing and self.flow_name_exists(flow_name):
+            error_msg = f"Flow '{flow_name}' already exists"
+            raise ValueError(error_msg)
+
+        # If overwriting, delete existing flow
+        if overwrite_existing and self.flow_name_exists(flow_name):
+            # Find existing flow ID and delete it
+            flow_ids = self.redis.smembers("flows")
+            for existing_flow_id in flow_ids:
+                existing_flow_data = self.redis.hgetall(f"flow:{existing_flow_id}")
+                if existing_flow_data.get("name") == flow_name:
+                    self.delete_flow(existing_flow_id)
+                    break
+
+        # Validate agents if requested
+        warnings = []
+        agents_data = flow_data.get("agents", [])
+        if validate_agents:
+            for agent in agents_data:
+                agent_name = agent.get("agent_name")
+                if agent_name and not self.get_agent(agent_name):
+                    warnings.append(
+                        f"Agent '{agent_name}' not currently registered "
+                        "but will be validated at execution time"
+                    )
+
+        # Create new flow
+        flow_id = self.create_flow(
+            name=flow_name,
+            description=flow_data.get("description", ""),
+            imported_from="json_import"
+        )
+
+        # Add agents to flow
+        for agent in agents_data:
+            agent_name = agent.get("agent_name", "")
+            if agent_name:
+                self.add_agent_to_flow(
+                    flow_id=flow_id,
+                    agent_name=agent_name,
+                    upstream_agents=agent.get("upstream_agents", []),
+                    required=agent.get("required", True),
+                    description=agent.get("description", "")
+                )
+
+        return flow_id, warnings

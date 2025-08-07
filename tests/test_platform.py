@@ -344,3 +344,370 @@ class TestRedisClient:
         redis_client.redis.delete.assert_any_call("agent:test_agent")
         redis_client.redis.delete.assert_any_call("queue:test_agent")
         redis_client.redis.srem.assert_called_with("agents", "test_agent")
+
+
+class TestFlowImportExport:
+    """Test cases for Flow Import/Export functionality."""
+
+    @pytest.fixture
+    def mock_redis_client(self):
+        """Mock Redis client for testing."""
+        mock_client = Mock(spec=RedisClient)
+        return mock_client
+
+    @pytest.fixture
+    def platform(self, mock_redis_client):
+        """Create platform instance with mocked Redis."""
+        with patch(
+            "mesh_platform.src.platform.RedisClient", return_value=mock_redis_client
+        ):
+            platform = PlatformCore()
+            return platform
+
+    @pytest.fixture
+    def client(self, platform):
+        """Create test client."""
+        return TestClient(platform.app)
+
+    @pytest.fixture
+    def sample_flow_data(self):
+        """Sample flow data for testing."""
+        return {
+            "name": "Test Workflow",
+            "description": "A test workflow for import/export",
+            "agents": [
+                {
+                    "agent_name": "text_extractor",
+                    "upstream_agents": [],
+                    "required": True,
+                    "description": "Extracts text from documents"
+                },
+                {
+                    "agent_name": "sentiment_analyzer",
+                    "upstream_agents": ["text_extractor"],
+                    "required": True,
+                    "description": "Analyzes sentiment of text"
+                }
+            ]
+        }
+
+    def test_export_flow_success(self, client, platform, sample_flow_data):
+        """Test successful flow export."""
+        flow_id = "test-flow-123"
+        
+        # Mock export data
+        export_data = {
+            **sample_flow_data,
+            "metadata": {
+                "exported_at": "2025-01-15T10:30:00Z",
+                "platform_version": "1.0.0",
+                "agent_count": 2,
+                "original_flow_id": flow_id
+            }
+        }
+        
+        platform.redis_client.export_flow_data.return_value = export_data
+
+        response = client.get(f"/flows/{flow_id}/export")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["name"] == "Test Workflow"
+        assert data["description"] == "A test workflow for import/export"
+        assert len(data["agents"]) == 2
+        assert "metadata" in data
+        assert data["metadata"]["agent_count"] == 2
+        
+        platform.redis_client.export_flow_data.assert_called_once_with(flow_id, platform_version="1.0.0")
+
+    def test_export_flow_not_found(self, client, platform):
+        """Test exporting non-existent flow."""
+        flow_id = "nonexistent-flow"
+        
+        platform.redis_client.export_flow_data.return_value = None
+
+        response = client.get(f"/flows/{flow_id}/export")
+
+        assert response.status_code == 404
+        assert "Flow not found" in response.json()["detail"]
+
+    def test_import_flow_success(self, client, platform, sample_flow_data):
+        """Test successful flow import."""
+        flow_id = "imported-flow-123"
+        warnings = ["Agent 'sentiment_analyzer' not currently registered"]
+        
+        platform.redis_client.import_flow_data.return_value = (flow_id, warnings)
+
+        import_request = {
+            "flow_data": sample_flow_data,
+            "validate_agents": True,
+            "overwrite_existing": False
+        }
+
+        response = client.post("/flows/import", json=import_request)
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["flow_id"] == flow_id
+        assert data["name"] == "Test Workflow"
+        assert data["status"] == "imported"
+        assert data["agents_added"] == 2
+        assert data["warnings"] == warnings
+        assert "message" in data
+        
+        platform.redis_client.import_flow_data.assert_called_once_with(
+            sample_flow_data, True, False
+        )
+
+    def test_import_flow_missing_flow_data(self, client, platform):
+        """Test importing flow with missing flow_data field."""
+        import_request = {
+            "validate_agents": True,
+            "overwrite_existing": False
+            # Missing flow_data
+        }
+
+        response = client.post("/flows/import", json=import_request)
+
+        assert response.status_code == 400
+        assert "Missing required field: flow_data" in response.json()["detail"]
+
+    def test_import_flow_invalid_flow_data(self, client, platform):
+        """Test importing flow with invalid flow_data structure."""
+        import_request = {
+            "flow_data": {
+                # Missing name field
+                "description": "Invalid flow data"
+            },
+            "validate_agents": True,
+            "overwrite_existing": False
+        }
+
+        response = client.post("/flows/import", json=import_request)
+
+        assert response.status_code == 400
+        assert "Invalid flow_data" in response.json()["detail"]
+
+    def test_import_flow_name_conflict(self, client, platform, sample_flow_data):
+        """Test importing flow with name conflict."""
+        platform.redis_client.import_flow_data.side_effect = ValueError("Flow 'Test Workflow' already exists")
+
+        import_request = {
+            "flow_data": sample_flow_data,
+            "validate_agents": True,
+            "overwrite_existing": False
+        }
+
+        response = client.post("/flows/import", json=import_request)
+
+        assert response.status_code == 409
+        assert "already exists" in response.json()["detail"]
+
+    def test_import_flow_validation_error(self, client, platform, sample_flow_data):
+        """Test importing flow with validation error."""
+        platform.redis_client.import_flow_data.side_effect = ValueError("Invalid agent configuration")
+
+        import_request = {
+            "flow_data": sample_flow_data,
+            "validate_agents": True,
+            "overwrite_existing": False
+        }
+
+        response = client.post("/flows/import", json=import_request)
+
+        assert response.status_code == 400
+        assert "Invalid agent configuration" in response.json()["detail"]
+
+    def test_import_flow_with_overwrite(self, client, platform, sample_flow_data):
+        """Test importing flow with overwrite enabled."""
+        flow_id = "overwritten-flow-123"
+        warnings = []
+        
+        platform.redis_client.import_flow_data.return_value = (flow_id, warnings)
+
+        import_request = {
+            "flow_data": sample_flow_data,
+            "validate_agents": False,
+            "overwrite_existing": True
+        }
+
+        response = client.post("/flows/import", json=import_request)
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["flow_id"] == flow_id
+        assert data["warnings"] == []
+        
+        platform.redis_client.import_flow_data.assert_called_once_with(
+            sample_flow_data, False, True
+        )
+
+
+class TestRedisClientFlowImportExport:
+    """Test cases for RedisClient flow import/export methods."""
+
+    @pytest.fixture
+    def mock_redis(self):
+        """Mock Redis connection."""
+        mock_redis = Mock()
+        mock_redis.ping.return_value = True
+        return mock_redis
+
+    @pytest.fixture
+    def redis_client(self, mock_redis):
+        """Create RedisClient with mocked Redis."""
+        with patch("redis.Redis", return_value=mock_redis):
+            client = RedisClient()
+            client.redis = mock_redis
+            return client
+
+    @pytest.fixture
+    def sample_flow_data(self):
+        """Sample flow data for testing."""
+        return {
+            "flow_id": "test-flow-123",
+            "name": "Test Workflow",
+            "description": "A test workflow",
+            "agents": [
+                {
+                    "agent_name": "text_extractor",
+                    "upstream_agents": [],
+                    "required": True,
+                    "description": "Extracts text"
+                }
+            ]
+        }
+
+    def test_export_flow_data_success(self, redis_client, sample_flow_data):
+        """Test successful flow data export."""
+        flow_id = "test-flow-123"
+        
+        redis_client.get_flow = Mock(return_value=sample_flow_data)
+
+        result = redis_client.export_flow_data(flow_id, "1.0.0")
+
+        assert result is not None
+        assert result["name"] == "Test Workflow"
+        assert result["description"] == "A test workflow"
+        assert len(result["agents"]) == 1
+        assert "metadata" in result
+        assert result["metadata"]["platform_version"] == "1.0.0"
+        assert result["metadata"]["original_flow_id"] == flow_id
+
+    def test_export_flow_data_not_found(self, redis_client):
+        """Test exporting non-existent flow data."""
+        flow_id = "nonexistent-flow"
+        
+        redis_client.get_flow = Mock(return_value=None)
+
+        result = redis_client.export_flow_data(flow_id)
+
+        assert result is None
+
+    def test_flow_name_exists_true(self, redis_client):
+        """Test flow name exists check returns True."""
+        redis_client.redis.smembers.return_value = {"flow1", "flow2"}
+        redis_client.redis.hgetall.side_effect = [
+            {"name": "Existing Flow"},
+            {"name": "Another Flow"}
+        ]
+
+        result = redis_client.flow_name_exists("Existing Flow")
+
+        assert result == True
+
+    def test_flow_name_exists_false(self, redis_client):
+        """Test flow name exists check returns False."""
+        redis_client.redis.smembers.return_value = {"flow1", "flow2"}
+        redis_client.redis.hgetall.side_effect = [
+            {"name": "Existing Flow"},
+            {"name": "Another Flow"}
+        ]
+
+        result = redis_client.flow_name_exists("Non-existent Flow")
+
+        assert result == False
+
+    def test_import_flow_data_success(self, redis_client):
+        """Test successful flow data import."""
+        flow_data = {
+            "name": "Imported Flow",
+            "description": "An imported workflow",
+            "agents": [
+                {
+                    "agent_name": "test_agent",
+                    "upstream_agents": [],
+                    "required": True,
+                    "description": "Test agent"
+                }
+            ]
+        }
+        
+        redis_client.flow_name_exists = Mock(return_value=False)
+        redis_client.create_flow = Mock(return_value="new-flow-id")
+        redis_client.add_agent_to_flow = Mock(return_value=True)
+        redis_client.get_agent = Mock(return_value={"agent_name": "test_agent"})
+
+        flow_id, warnings = redis_client.import_flow_data(flow_data, True, False)
+
+        assert flow_id == "new-flow-id"
+        assert warnings == []
+        redis_client.create_flow.assert_called_once_with(
+            name="Imported Flow",
+            description="An imported workflow",
+            imported_from="json_import"
+        )
+
+    def test_import_flow_data_with_warnings(self, redis_client):
+        """Test flow data import with agent validation warnings."""
+        flow_data = {
+            "name": "Imported Flow",
+            "agents": [
+                {
+                    "agent_name": "missing_agent",
+                    "upstream_agents": [],
+                    "required": True
+                }
+            ]
+        }
+        
+        redis_client.flow_name_exists = Mock(return_value=False)
+        redis_client.create_flow = Mock(return_value="new-flow-id")
+        redis_client.add_agent_to_flow = Mock(return_value=True)
+        redis_client.get_agent = Mock(return_value=None)  # Agent not found
+
+        flow_id, warnings = redis_client.import_flow_data(flow_data, True, False)
+
+        assert flow_id == "new-flow-id"
+        assert len(warnings) == 1
+        assert "missing_agent" in warnings[0]
+        assert "not currently registered" in warnings[0]
+
+    def test_import_flow_data_name_conflict(self, redis_client):
+        """Test flow data import with name conflict."""
+        flow_data = {
+            "name": "Existing Flow"
+        }
+        
+        redis_client.flow_name_exists = Mock(return_value=True)
+
+        with pytest.raises(ValueError, match="already exists"):
+            redis_client.import_flow_data(flow_data, True, False)
+
+    def test_import_flow_data_overwrite(self, redis_client):
+        """Test flow data import with overwrite enabled."""
+        flow_data = {
+            "name": "Existing Flow",
+            "agents": []
+        }
+        
+        redis_client.flow_name_exists = Mock(return_value=True)
+        redis_client.redis.smembers.return_value = {"existing-flow-id"}
+        redis_client.redis.hgetall.return_value = {"name": "Existing Flow"}
+        redis_client.delete_flow = Mock(return_value=True)
+        redis_client.create_flow = Mock(return_value="new-flow-id")
+
+        flow_id, warnings = redis_client.import_flow_data(flow_data, False, True)
+
+        assert flow_id == "new-flow-id"
+        redis_client.delete_flow.assert_called_once_with("existing-flow-id")

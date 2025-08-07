@@ -1764,6 +1764,29 @@ GET /flows/{flow_id}
 
 # Delete flow
 DELETE /flows/{flow_id}
+
+# Export flow as JSON
+GET /flows/{flow_id}/export
+
+# Import flow from JSON
+POST /flows/import
+{
+    "flow_data": {
+        "name": "Imported Workflow",
+        "agents": [
+            {
+                "agent_name": "text_extractor",
+                "upstream_agents": [],
+                "required": true
+            },
+            {
+                "agent_name": "sentiment_analyzer", 
+                "upstream_agents": ["text_extractor"],
+                "required": true
+            }
+        ]
+    }
+}
 ```
 
 #### Flow Agent Management
@@ -1784,6 +1807,71 @@ PUT /flows/{flow_id}/agents/{agent_name}
 
 # Remove agent from flow
 DELETE /flows/{flow_id}/agents/{agent_name}
+```
+
+#### Flow Import/Export
+```http
+# Export flow definition as JSON
+GET /flows/{flow_id}/export
+Response:
+{
+    "name": "My Workflow",
+    "description": "Optional workflow description",
+    "agents": [
+        {
+            "agent_name": "text_extractor",
+            "upstream_agents": [],
+            "required": true,
+            "description": "Extracts text from documents"
+        },
+        {
+            "agent_name": "sentiment_analyzer",
+            "upstream_agents": ["text_extractor"],
+            "required": true,
+            "description": "Analyzes sentiment of extracted text"
+        }
+    ],
+    "metadata": {
+        "exported_at": "2025-01-15T10:30:00Z",
+        "platform_version": "1.0.0",
+        "agent_count": 2
+    }
+}
+
+# Import flow from JSON definition
+POST /flows/import
+{
+    "flow_data": {
+        "name": "Imported Workflow",
+        "description": "Workflow imported from external source",
+        "agents": [
+            {
+                "agent_name": "text_extractor",
+                "upstream_agents": [],
+                "required": true,
+                "description": "Extracts text from documents"  
+            },
+            {
+                "agent_name": "sentiment_analyzer",
+                "upstream_agents": ["text_extractor"],
+                "required": true,
+                "description": "Analyzes sentiment of extracted text"
+            }
+        ]
+    },
+    "validate_agents": true,  // Optional: validate agent existence before import
+    "overwrite_existing": false  // Optional: whether to overwrite if flow name exists
+}
+Response:
+{
+    "flow_id": "uuid",
+    "name": "Imported Workflow", 
+    "status": "imported",
+    "agents_added": 2,
+    "warnings": [
+        "Agent 'sentiment_analyzer' not currently registered but will be validated at execution time"
+    ]
+}
 ```
 
 #### Flow Execution
@@ -1807,6 +1895,7 @@ GET /flows/{flow_id}/executions/{execution_id}
 {
     "flow_id": "uuid",
     "name": "My Workflow", 
+    "description": "Optional workflow description",  # Added for import/export
     "created_at": "timestamp",
     "updated_at": "timestamp",
     "agents": [
@@ -1814,15 +1903,60 @@ GET /flows/{flow_id}/executions/{execution_id}
             "agent_name": "text_extractor",
             "upstream_agents": [],  # Start agent
             "required": true,
+            "description": "Optional agent description",  # Added for import/export
             "added_at": "timestamp"
         },
         {
             "agent_name": "sentiment_analyzer",
             "upstream_agents": ["text_extractor"],
             "required": true,
+            "description": "Optional agent description",  # Added for import/export
             "added_at": "timestamp"
         }
     ]
+}
+```
+
+#### Flow Export Schema
+```python
+{
+    "name": "My Workflow",
+    "description": "Optional workflow description",
+    "agents": [
+        {
+            "agent_name": "text_extractor", 
+            "upstream_agents": [],
+            "required": true,
+            "description": "Optional agent description"
+        }
+    ],
+    "metadata": {
+        "exported_at": "2025-01-15T10:30:00Z",
+        "platform_version": "1.0.0", 
+        "agent_count": 2,
+        "original_flow_id": "uuid"  # Reference to source flow
+    }
+}
+```
+
+#### Flow Import Schema
+```python
+{
+    "flow_data": {
+        "name": "Imported Workflow",
+        "description": "Optional description",
+        "agents": [
+            {
+                "agent_name": "text_extractor",
+                "upstream_agents": [],
+                "required": true,
+                "description": "Optional description"
+            }
+        ]
+    },
+    "validate_agents": true,        # Optional: validate agent existence
+    "overwrite_existing": false,    # Optional: overwrite if name exists
+    "preserve_ids": false           # Optional: attempt to preserve agent order
 }
 ```
 
@@ -1856,8 +1990,11 @@ GET /flows/{flow_id}/executions/{execution_id}
 "flow:{flow_id}": {
     "flow_id": "uuid",
     "name": "string",
+    "description": "string",          # Added for import/export support
     "created_at": "timestamp", 
-    "updated_at": "timestamp"
+    "updated_at": "timestamp",
+    "imported_from": "string|null",   # Track if flow was imported
+    "export_metadata": "object|null"  # Cache export metadata for performance
 }
 
 # Flow agents
@@ -1866,6 +2003,7 @@ GET /flows/{flow_id}/executions/{execution_id}
         "agent_name": "string",
         "upstream_agents": ["array"],
         "required": "boolean",
+        "description": "string",      # Added for import/export support
         "added_at": "timestamp"
     }
 ]
@@ -1976,13 +2114,109 @@ GET /flows/{flow_id}/executions/{execution_id}/debug
 GET /flows/{flow_id}/executions?limit=10
 ```
 
+### Flow Import/Export Implementation Details
+
+#### Export Flow Logic
+```python
+def export_flow(flow_id: str) -> dict:
+    """Export flow definition as portable JSON"""
+    flow_data = redis.get(f"flow:{flow_id}")
+    agents_data = redis.get(f"flow:{flow_id}:agents")
+    
+    export_data = {
+        "name": flow_data["name"],
+        "description": flow_data.get("description", ""),
+        "agents": [
+            {
+                "agent_name": agent["agent_name"],
+                "upstream_agents": agent["upstream_agents"],
+                "required": agent["required"],
+                "description": agent.get("description", "")
+            }
+            for agent in agents_data
+        ],
+        "metadata": {
+            "exported_at": datetime.utcnow().isoformat(),
+            "platform_version": get_platform_version(),
+            "agent_count": len(agents_data),
+            "original_flow_id": flow_id
+        }
+    }
+    
+    return export_data
+```
+
+#### Import Flow Logic
+```python
+def import_flow(flow_data: dict, validate_agents: bool = True, 
+                overwrite_existing: bool = False) -> dict:
+    """Import flow from JSON definition"""
+    
+    # Check if flow name already exists
+    if not overwrite_existing and flow_name_exists(flow_data["name"]):
+        raise FlowNameConflictError(f"Flow '{flow_data['name']}' already exists")
+    
+    # Validate agent references if requested
+    warnings = []
+    if validate_agents:
+        for agent in flow_data["agents"]:
+            if not agent_exists(agent["agent_name"]):
+                warnings.append(
+                    f"Agent '{agent['agent_name']}' not currently registered "
+                    "but will be validated at execution time"
+                )
+    
+    # Create new flow
+    flow_id = str(uuid.uuid4())
+    flow_record = {
+        "flow_id": flow_id,
+        "name": flow_data["name"],
+        "description": flow_data.get("description", ""),
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+        "imported_from": "json_import"
+    }
+    
+    # Store flow and agents
+    redis.set(f"flow:{flow_id}", flow_record)
+    redis.set(f"flow:{flow_id}:agents", flow_data["agents"])
+    
+    return {
+        "flow_id": flow_id,
+        "name": flow_data["name"],
+        "status": "imported",
+        "agents_added": len(flow_data["agents"]),
+        "warnings": warnings
+    }
+```
+
+#### Error Handling for Import/Export
+```python
+class FlowImportExportError(Exception):
+    """Base exception for import/export operations"""
+    pass
+
+class FlowNameConflictError(FlowImportExportError):
+    """Flow name already exists during import"""
+    pass
+
+class InvalidFlowDataError(FlowImportExportError):
+    """Invalid flow data format during import"""
+    pass
+
+class FlowNotFoundError(FlowImportExportError):
+    """Flow not found during export"""
+    pass
+```
+
 ### Implementation Priority
 1. **Core Flow CRUD**: Create, read, update, delete flows
 2. **Agent Management**: Add/remove agents from flows with dependencies  
-3. **Health Check System**: Pre-execution agent availability validation
-4. **Execution Engine**: Basic flow execution with dependency resolution and retry logic
-5. **Error Handling**: Fail-fast error propagation with retry mechanism
-6. **Flow State Tracking**: Execution status and result storage with debugging APIs
+3. **Flow Import/Export**: JSON-based flow definition import/export endpoints
+4. **Health Check System**: Pre-execution agent availability validation
+5. **Execution Engine**: Basic flow execution with dependency resolution and retry logic
+6. **Error Handling**: Fail-fast error propagation with retry mechanism
+7. **Flow State Tracking**: Execution status and result storage with debugging APIs
 
 ### Complete Flow MVP Specification Summary
 
