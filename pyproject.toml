@@ -39,17 +39,16 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mesh-sdk/mesh-sdk"
-Documentation = "https://github.com/mesh-sdk/mesh-sdk/blob/main/docs/"
-Repository = "https://github.com/mesh-sdk/mesh-sdk"
-Issues = "https://github.com/mesh-sdk/mesh-sdk/issues"
+Homepage = "https://github.com/hdinguyen/mesh-sdk"
+Documentation = "https://github.com/hdinguyen/mesh-sdk/blob/main/docs/"
+Repository = "https://github.com/hdinguyen/mesh-sdk"
+Issues = "https://github.com/hdinguyen/mesh-sdk/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["mesh_platform", "mesh_agent"]
-include = ["mesh_sdk.py"]
+packages = ["mesh_sdk"]
 
 [project.scripts]
-mesh-platform = "mesh_platform.src.__main__:main"
+mesh-platform = "mesh_sdk.mesh_platform.src.__main__:main"
 
 [tool.ruff]
 line-length = 88
